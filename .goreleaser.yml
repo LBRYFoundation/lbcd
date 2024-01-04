@@ -18,7 +18,7 @@ builds:
     ldflags:
       - -s -w
       - -buildid=
-      - -X github.com/lbryio/lbcd/version.appTag={{ .Tag }}
+      - -X github.com/lbryfoundation/lbcd/version.appTag={{ .Tag }}
     targets:
       - linux_amd64
       - linux_arm64
@@ -35,7 +35,7 @@ builds:
     ldflags:
       - -s -w
       - -buildid=
-      - -X github.com/lbryio/lbcd/version.appTag={{ .Tag }}
+      - -X github.com/lbryfoundation/lbcd/version.appTag={{ .Tag }}
     env:
       - CGO_ENABLED=0
     targets:
@@ -60,8 +60,8 @@ dockers:
   - use: buildx
     dockerfile: Dockerfile.goreleaser
     image_templates:
-    - "docker.io/lbry/lbcd:{{ .Tag }}"
-    - "docker.io/lbry/lbcd:latest"
+    - "docker.io/lbryfoundation/lbcd:{{ .Tag }}"
+    - "docker.io/lbryfoundation/lbcd:latest"
 
 release:
   draft: true
