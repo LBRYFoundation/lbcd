@@ -24,17 +24,17 @@ import (
 
 	"github.com/btcsuite/go-socks/socks"
 	flags "github.com/jessevdk/go-flags"
-	"github.com/lbryio/lbcd/blockchain"
-	"github.com/lbryio/lbcd/chaincfg"
-	"github.com/lbryio/lbcd/chaincfg/chainhash"
-	"github.com/lbryio/lbcd/connmgr"
-	"github.com/lbryio/lbcd/database"
-	_ "github.com/lbryio/lbcd/database/ffldb"
-	"github.com/lbryio/lbcd/mempool"
-	"github.com/lbryio/lbcd/peer"
-	"github.com/lbryio/lbcd/version"
-	"github.com/lbryio/lbcd/wire"
-	btcutil "github.com/lbryio/lbcutil"
+	"github.com/lbryfoundation/lbcd/blockchain"
+	"github.com/lbryfoundation/lbcd/chaincfg"
+	"github.com/lbryfoundation/lbcd/chaincfg/chainhash"
+	"github.com/lbryfoundation/lbcd/connmgr"
+	"github.com/lbryfoundation/lbcd/database"
+	_ "github.com/lbryfoundation/lbcd/database/ffldb"
+	"github.com/lbryfoundation/lbcd/mempool"
+	"github.com/lbryfoundation/lbcd/peer"
+	"github.com/lbryfoundation/lbcd/version"
+	"github.com/lbryfoundation/lbcd/wire"
+	btcutil "github.com/lbryfoundation/lbcutil"
 )
 
 const (
