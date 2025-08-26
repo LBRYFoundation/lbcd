@@ -9,7 +9,7 @@
 
 Software stack developed by LBRY teams has been all migrated to **lbcd**.
 
-We're working with exchanges and pool oerators to migrate from **lbrycrd** to **lbcd**.
+We're working with exchanges and pool operators to migrate from **lbrycrd** to **lbcd**.
 
 If you're integrating with **lbcd+lbcwallet**, please check the Wiki for current [supported RPCs](wiki/RPC-availability).
 
@@ -35,6 +35,16 @@ $ go install github.com/lbryio/lbcd@latest
 
 # lbcctl (rpc client utility)
 $ go install github.com/lbryio/lbcd/cmd/lbcctl@latest
+```
+
+## Building from Source
+
+To build **lbcd** from source, clone the repository and use the `go build` command:
+
+``` sh
+$ git clone https://github.com/LBRYFoundation/lbcd.git
+$ cd lbcd
+$ go build .
 ```
 
 ## Usage
