@@ -107,6 +107,7 @@ linters:
           allow:
             - $gostd
             - github.com/
+            - golang.org/x/crypto/ripemd160
           deny:
             - pkg: github.com/sirupsen/logrus
               desc: "logging is allowed only by logutils.Log"
