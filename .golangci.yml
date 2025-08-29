@@ -106,6 +106,7 @@ linters:
           list-mode: strict
           allow:
             - $gostd
+            - github.com/
           deny:
             - pkg: github.com/sirupsen/logrus
               desc: "logging is allowed only by logutils.Log"
