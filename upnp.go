@@ -95,7 +95,7 @@ func Discover() (nat NAT, err error) {
 	for i := 0; i < 3; i++ {
 		_, err = socket.WriteToUDP(message, ssdp)
 		if err != nil {
-			return
+			return nil, err
 		}
 		var n int
 		n, _, err = socket.ReadFromUDP(answerBytes)
@@ -124,16 +124,16 @@ func Discover() (nat NAT, err error) {
 		var serviceURL string
 		serviceURL, err = getServiceURL(locURL)
 		if err != nil {
-			return
+			return nil, err
 		}
 		var serviceIP string = getServiceIP(serviceURL)
 		var ourIP string
 		ourIP, err = getOurIP(serviceIP)
 		if err != nil {
-			return
+			return nil, err
 		}
 		nat = &upnpNAT{serviceURL: serviceURL, ourIP: ourIP}
-		return
+		return nat, nil
 	}
 	err = errors.New("UPnP port discovery failed")
 	return nat, err
@@ -228,7 +228,7 @@ func getOurIP(serviceIP string) (ip string, err error) {
 			return ip.String(), nil
 		}
 	}
-	return
+	return "", err
 }
 
 // getServiceURL parses the xml description at the given root url to find the
@@ -251,22 +251,22 @@ func getServiceURL(rootURL string) (url string, err error) {
 	a := &root.Device
 	if a.DeviceType != "urn:schemas-upnp-org:device:InternetGatewayDevice:1" {
 		err = errors.New("no InternetGatewayDevice")
-		return
+		return "", err
 	}
 	b := getChildDevice(a, "urn:schemas-upnp-org:device:WANDevice:1")
 	if b == nil {
 		err = errors.New("no WANDevice")
-		return
+		return "", err
 	}
 	c := getChildDevice(b, "urn:schemas-upnp-org:device:WANConnectionDevice:1")
 	if c == nil {
 		err = errors.New("no WANConnectionDevice")
-		return
+		return "", err
 	}
 	d := getChildService(c, "urn:schemas-upnp-org:service:WANIPConnection:1")
 	if d == nil {
 		err = errors.New("no WANIPConnection")
-		return
+		return "", err
 	}
 	url = combineURL(rootURL, d.ControlURL)
 	return url, err
@@ -380,7 +380,7 @@ func (n *upnpNAT) AddPortMapping(protocol string, externalPort, internalPort int
 
 	response, err := soapRequest(n.serviceURL, "AddPortMapping", message)
 	if err != nil {
-		return
+		return 0, err
 	}
 
 	// TODO: check response to see if the port was forwarded
@@ -389,7 +389,7 @@ func (n *upnpNAT) AddPortMapping(protocol string, externalPort, internalPort int
 	// codes here.
 	mappedExternalPort = externalPort
 	_ = response
-	return
+	return mappedExternalPort, nil
 }
 
 // DeletePortMapping implements the NAT interface by removing up a port forwarding
@@ -403,11 +403,11 @@ func (n *upnpNAT) DeletePortMapping(protocol string, externalPort, internalPort 
 
 	response, err := soapRequest(n.serviceURL, "DeletePortMapping", message)
 	if err != nil {
-		return
+		return err
 	}
 
 	// TODO: check response to see if the port was deleted
 	// log.Println(message, response)
 	_ = response
-	return
+	return nil
 }
