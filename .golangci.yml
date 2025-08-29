@@ -1,4 +1,7 @@
 formatters:
+  enable:
+    - gofmt
+    - goimports
   settings:
     gci:
       sections:
@@ -29,8 +32,6 @@ linters:
     # - godot
     # - godox
     # - goerr113
-    - gofmt
-    - goimports
     # - gomnd
     - goprintffuncname
     # - gosec
