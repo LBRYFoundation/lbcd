@@ -69,18 +69,18 @@ type upnpNAT struct {
 func Discover() (nat NAT, err error) {
 	ssdp, err := net.ResolveUDPAddr("udp4", "239.255.255.250:1900")
 	if err != nil {
-		return
+		return nil, err
 	}
 	conn, err := net.ListenPacket("udp4", ":0")
 	if err != nil {
-		return
+		return nil, err
 	}
 	socket := conn.(*net.UDPConn)
 	defer socket.Close()
 
 	err = socket.SetDeadline(time.Now().Add(3 * time.Second))
 	if err != nil {
-		return
+		return nil, err
 	}
 
 	st := "ST: urn:schemas-upnp-org:device:InternetGatewayDevice:1\r\n"
@@ -236,17 +236,17 @@ func getOurIP(serviceIP string) (ip string, err error) {
 func getServiceURL(rootURL string) (url string, err error) {
 	r, err := http.Get(rootURL)
 	if err != nil {
-		return
+		return "", err
 	}
 	defer r.Body.Close()
 	if r.StatusCode >= 400 {
 		err = errors.New(fmt.Sprint(r.StatusCode))
-		return
+		return "", err
 	}
 	var root root
 	err = xml.NewDecoder(r.Body).Decode(&root)
 	if err != nil {
-		return
+		return "", err
 	}
 	a := &root.Device
 	if a.DeviceType != "urn:schemas-upnp-org:device:InternetGatewayDevice:1" {
@@ -325,7 +325,7 @@ func soapRequest(url, function, message string) (replyXML []byte, err error) {
 	if r.StatusCode >= 400 {
 		err = errors.New("Error " + strconv.Itoa(r.StatusCode) + " for " + function)
 		r = nil
-		return
+		return nil, err
 	}
 	var reply soapEnvelope
 	err = xml.NewDecoder(r.Body).Decode(&reply)
