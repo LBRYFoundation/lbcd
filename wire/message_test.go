@@ -41,10 +41,10 @@ func TestMessage(t *testing.T) {
 	// Create the various types of messages to test.
 
 	// MsgVersion.
-	addrYou := &net.TCPAddr{IP: net.ParseIP("192.168.0.1"), Port: 8333}
+	addrYou := &net.TCPAddr{IP: net.ParseIP("192.168.0.1"), Port: 9246}
 	you := NewNetAddress(addrYou, SFNodeNetwork)
 	you.Timestamp = time.Time{} // Version message has zero value timestamp.
-	addrMe := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 8333}
+	addrMe := &net.TCPAddr{IP: net.ParseIP("127.0.0.1"), Port: 9246}
 	me := NewNetAddress(addrMe, SFNodeNetwork)
 	me.Timestamp = time.Time{} // Version message has zero value timestamp.
 	msgVersion := NewMsgVersion(me, you, 123123, 0)
@@ -66,7 +66,7 @@ func TestMessage(t *testing.T) {
 	msgFilterAdd := NewMsgFilterAdd([]byte{0x01})
 	msgFilterClear := NewMsgFilterClear()
 	msgFilterLoad := NewMsgFilterLoad([]byte{0x01}, 10, 0, BloomUpdateNone)
-	bh := NewBlockHeader(1, &chainhash.Hash{}, &chainhash.Hash{}, 0, 0)
+	bh := NewBlockHeader(1, &chainhash.Hash{}, &chainhash.Hash{}, &chainhash.Hash{}, 0, 0)
 	msgMerkleBlock := NewMsgMerkleBlock(bh)
 	msgReject := NewMsgReject("block", RejectDuplicate, "duplicate block")
 	msgGetCFilters := NewMsgGetCFilters(GCSFilterRegular, 0, &chainhash.Hash{})
@@ -89,7 +89,7 @@ func TestMessage(t *testing.T) {
 		{msgGetAddr, msgGetAddr, pver, MainNet, 24},
 		{msgAddr, msgAddr, pver, MainNet, 25},
 		{msgGetBlocks, msgGetBlocks, pver, MainNet, 61},
-		{msgBlock, msgBlock, pver, MainNet, 239},
+		{msgBlock, msgBlock, pver, MainNet, 271},
 		{msgInv, msgInv, pver, MainNet, 25},
 		{msgGetData, msgGetData, pver, MainNet, 25},
 		{msgNotFound, msgNotFound, pver, MainNet, 25},
@@ -102,7 +102,7 @@ func TestMessage(t *testing.T) {
 		{msgFilterAdd, msgFilterAdd, pver, MainNet, 26},
 		{msgFilterClear, msgFilterClear, pver, MainNet, 24},
 		{msgFilterLoad, msgFilterLoad, pver, MainNet, 35},
-		{msgMerkleBlock, msgMerkleBlock, pver, MainNet, 110},
+		{msgMerkleBlock, msgMerkleBlock, pver, MainNet, 142},
 		{msgReject, msgReject, pver, MainNet, 79},
 		{msgGetCFilters, msgGetCFilters, pver, MainNet, 61},
 		{msgGetCFHeaders, msgGetCFHeaders, pver, MainNet, 61},

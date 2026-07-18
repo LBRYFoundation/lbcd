@@ -13,7 +13,7 @@ import (
 
 // MaxBlockHeaderPayload is the maximum number of bytes a block header can be.
 // Version 4 bytes + Timestamp 4 bytes + Bits 4 bytes + Nonce 4 bytes +
-// PrevBlock and MerkleRoot hashes.
+// PrevBlock, ClaimTrie, and MerkleRoot hashes.
 const MaxBlockHeaderPayload = 16 + (chainhash.HashSize * 2)
 
 // BlockHeader defines information about a block and is used in the bitcoin
@@ -28,6 +28,9 @@ type BlockHeader struct {
 	// Merkle tree reference to hash of all transactions for the block.
 	MerkleRoot chainhash.Hash
 
+    // ClaimTrie reference to hash of ClaimTrie.
+    ClaimTrie chainhash.Hash
+
 	// Time the block was created.  This is, unfortunately, encoded as a
 	// uint32 on the wire and therefore is limited to 2106.
 	Timestamp time.Time
@@ -41,7 +44,7 @@ type BlockHeader struct {
 
 // blockHeaderLen is a constant that represents the number of bytes for a block
 // header.
-const blockHeaderLen = 80
+const blockHeaderLen = 112
 
 // BlockHash computes the block identifier hash for the given block header.
 func (h *BlockHeader) BlockHash() chainhash.Hash {
@@ -89,7 +92,7 @@ func (h *BlockHeader) Serialize(w io.Writer) error {
 // NewBlockHeader returns a new BlockHeader using the provided version, previous
 // block hash, merkle root hash, difficulty bits, and nonce used to generate the
 // block with defaults for the remaining fields.
-func NewBlockHeader(version int32, prevHash, merkleRootHash *chainhash.Hash,
+func NewBlockHeader(version int32, prevHash, merkleRootHash *chainhash.Hash, claimTrieHash *chainhash.Hash,
 	bits uint32, nonce uint32) *BlockHeader {
 
 	// Limit the timestamp to one second precision since the protocol
@@ -98,6 +101,7 @@ func NewBlockHeader(version int32, prevHash, merkleRootHash *chainhash.Hash,
 		Version:    version,
 		PrevBlock:  *prevHash,
 		MerkleRoot: *merkleRootHash,
+		ClaimTrie:  *claimTrieHash,
 		Timestamp:  time.Unix(time.Now().Unix(), 0),
 		Bits:       bits,
 		Nonce:      nonce,
@@ -140,6 +144,10 @@ func readBlockHeaderBuf(r io.Reader, pver uint32, bh *BlockHeader,
 	if _, err := io.ReadFull(r, bh.MerkleRoot[:]); err != nil {
 		return err
 	}
+
+    if _, err := io.ReadFull(r, bh.ClaimTrie[:]); err != nil {
+        return err
+    }
 
 	if _, err := io.ReadFull(r, buf[:4]); err != nil {
 		return err
@@ -195,6 +203,10 @@ func writeBlockHeaderBuf(w io.Writer, pver uint32, bh *BlockHeader,
 	if _, err := w.Write(bh.MerkleRoot[:]); err != nil {
 		return err
 	}
+
+    if _, err := w.Write(bh.ClaimTrie[:]); err != nil {
+        return err
+    }
 
 	littleEndian.PutUint32(buf[:4], uint32(bh.Timestamp.Unix()))
 	if _, err := w.Write(buf[:4]); err != nil {
