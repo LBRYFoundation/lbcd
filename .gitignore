@@ -3,6 +3,7 @@
 
 # Databases
 btcd.db
+lbcd.db
 *-shm
 *-wal
 

@@ -1,18 +1,18 @@
-# This Dockerfile builds btcd from source and creates a small (55 MB) docker container based on alpine linux.
+# This Dockerfile builds lbcd from source and creates a small (55 MB) docker container based on alpine linux.
 #
-# Clone this repository and run the following command to build and tag a fresh btcd amd64 container:
+# Clone this repository and run the following command to build and tag a fresh lbcd amd64 container:
 #
-# docker build . -t yourregistry/btcd
+# docker build . -t yourregistry/lbcd
 #
 # You can use the following command to build an arm64v8 container:
 #
-# docker build . -t yourregistry/btcd --build-arg ARCH=arm64v8
+# docker build . -t yourregistry/lbcd --build-arg ARCH=arm64v8
 #
 # For more information how to use this docker image visit:
 # https://github.com/btcsuite/btcd/tree/master/docs
 #
-# 8333  Mainnet Bitcoin peer-to-peer port
-# 8334  Mainet RPC port
+# 9246  Mainnet LBRY peer-to-peer port
+# 9245  Mainet RPC port
 
 ARG ARCH=amd64
 # using the SHA256 instead of tags
@@ -38,8 +38,8 @@ FROM $ARCH/alpine:3.21
 
 COPY --from=build-container /go/bin /bin
 
-VOLUME ["/root/.btcd"]
+VOLUME ["/root/.lbcd"]
 
-EXPOSE 8333 8334
+EXPOSE 9245 9246
 
-ENTRYPOINT ["btcd"]
+ENTRYPOINT ["lbcd"]
