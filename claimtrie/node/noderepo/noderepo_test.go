@@ -186,3 +186,41 @@ func TestIterator(t *testing.T) {
 		return true
 	})
 }
+
+func TestDropChangesAbove(t *testing.T) {
+
+	r := require.New(t)
+
+	repo, err := NewPebble(t.TempDir())
+	r.NoError(err)
+	defer func() {
+		err := repo.Close()
+		r.NoError(err)
+	}()
+
+	chg := change.NewChange(change.AddClaim).SetOutPoint(out1)
+	name1, name2, name3 := []byte("name1"), []byte("name2"), []byte("name3")
+
+	err = repo.AppendChanges([]change.Change{
+		chg.SetName(name1).SetHeight(1), chg.SetName(name1).SetHeight(3),
+		chg.SetName(name2).SetHeight(2),
+		chg.SetName(name3).SetHeight(4), chg.SetName(name3).SetHeight(5),
+	})
+	r.NoError(err)
+
+	names, err := repo.DropChangesAbove(2)
+	r.NoError(err)
+	r.Equal([][]byte{name1, name3}, names)
+
+	changes, err := repo.LoadChanges(name1)
+	r.NoError(err)
+	r.Equal([]change.Change{chg.SetName(name1).SetHeight(1)}, changes)
+
+	changes, err = repo.LoadChanges(name2)
+	r.NoError(err)
+	r.Equal([]change.Change{chg.SetName(name2).SetHeight(2)}, changes)
+
+	changes, err = repo.LoadChanges(name3)
+	r.NoError(err)
+	r.Empty(changes)
+}

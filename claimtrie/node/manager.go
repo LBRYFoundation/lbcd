@@ -15,6 +15,7 @@ type Manager interface {
 	AppendChange(chg change.Change)
 	IncrementHeightTo(height int32, temporary bool) ([][]byte, error)
 	DecrementHeightTo(affectedNames [][]byte, height int32) ([][]byte, error)
+	DropChangesAboveHeight() ([][]byte, error)
 	Height() int32
 	Close() error
 	NodeAt(height int32, name []byte) (*Node, error)
@@ -312,6 +313,19 @@ func (nm *BaseManager) DecrementHeightTo(affectedNames [][]byte, height int32) (
 	nm.height = height
 
 	return affectedNames, nil
+}
+
+// DropChangesAboveHeight discards persisted changes for heights above the
+// current height, which can be left behind when the repos were not flushed
+// together.
+func (nm *BaseManager) DropChangesAboveHeight() ([][]byte, error) {
+	names, err := nm.repo.DropChangesAbove(nm.height)
+	if err != nil {
+		return nil, errors.Wrap(err, "in drop changes above")
+	}
+
+	nm.cache.drop(names)
+	return names, nil
 }
 
 func (nm *BaseManager) getDelayForName(n *Node, chg change.Change) int32 {

@@ -2033,46 +2033,72 @@ func rebuildMissingClaimTrieData(b *BlockChain, done <-chan struct{}) error {
 		return b.claimTrie.ResetHeight(target)
 	}
 
+	log.Infof("Rebuilding claim trie data from %d to %d", b.claimTrie.Height(), target)
+
+	// Being behind the chain implies an unclean shutdown, which may have left
+	// node changes in the claim trie for the very blocks about to be replayed.
+	dropped, err := b.claimTrie.DropChangesAboveHeight()
+	if err != nil {
+		return err
+	}
+	if dropped > 0 {
+		log.Infof("Dropped claim trie changes above height %d from %d names",
+			b.claimTrie.Height(), dropped)
+	}
+
 	start := time.Now()
 	lastReport := time.Now()
-	// TODO: move this view inside the loop (or recreate it every 5 sec.)
-	// as accumulating all inputs has potential to use a huge amount of RAM
-	// but we need to get the spent inputs working for that to be possible
-	view := NewUtxoViewpoint()
-	for h := int32(0); h < target; h++ {
+	for h := b.claimTrie.Height() + 1; h <= target; h++ {
 		select {
 		case <-done:
 			return fmt.Errorf("rebuild unfinished at height %d", b.claimTrie.Height())
 		default:
 		}
 
-		n := b.bestChain.NodeByHeight(h + 1)
+		n := b.bestChain.NodeByHeight(h)
 
 		var block *btcutil.Block
+		var stxos []SpentTxOut
 		err := b.db.View(func(dbTx database.Tx) error {
 			var err error
 			block, err = dbFetchBlockByNode(dbTx, n)
+			if err != nil {
+				return err
+			}
+			stxos, err = dbFetchSpendJournalEntry(dbTx, block)
 			return err
 		})
 		if err != nil {
 			return err
 		}
 
-		err = view.fetchInputUtxos(b.db, block)
-		if err != nil {
-			return err
+		// The utxo set in the database reflects the tip of the chain, so it
+		// no longer holds the outputs spent by historical blocks.  Rather than
+		// replaying the chain from genesis to reconstruct them in memory, load
+		// the outputs this block spent from its spend journal entry.  Claim
+		// processing only needs the scripts of the spent outputs.
+		if len(stxos) != countSpentOutputs(block) {
+			return AssertError(fmt.Sprintf("spend journal for block %v at "+
+				"height %d has %d entries, expected %d", block.Hash(), h,
+				len(stxos), countSpentOutputs(block)))
 		}
-
-		err = view.connectTransactions(block, nil)
-		if err != nil {
-			return err
-		}
-
-		if h >= b.claimTrie.Height() {
-			err = b.ParseClaimScripts(block, n, view, false)
-			if err != nil {
-				return err
+		view := NewUtxoViewpoint()
+		stxoIdx := 0
+		for _, tx := range block.Transactions()[1:] {
+			for _, txIn := range tx.MsgTx().TxIn {
+				stxo := &stxos[stxoIdx]
+				stxoIdx++
+				view.entries[txIn.PreviousOutPoint] = &UtxoEntry{
+					amount:      stxo.Amount,
+					pkScript:    stxo.PkScript,
+					blockHeight: stxo.Height,
+				}
 			}
+		}
+
+		err = b.ParseClaimScripts(block, n, view, false)
+		if err != nil {
+			return err
 		}
 		if time.Since(lastReport) > time.Second*5 {
 			lastReport = time.Now()
