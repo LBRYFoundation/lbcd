@@ -177,6 +177,7 @@ var rpcHandlersBeforeInit = map[string]commandHandler{
 	"gettxout":               handleGetTxOut,
 	"help":                   handleHelp,
 	"invalidateblock":        handleInvalidateBlock,
+	"setprunehold":           handleSetPruneHold,
 	"listbanned":             handleListBanned,
 	"node":                   handleNode,
 	"ping":                   handlePing,
@@ -1381,10 +1382,17 @@ func handleGetBlockChainInfo(s *rpcServer, cmd interface{}, closeChan <-chan str
 		BestBlockHash: chainSnapshot.Hash.String(),
 		Difficulty:    getDifficultyRatio(chainSnapshot.Bits, params),
 		MedianTime:    chainSnapshot.MedianTime.Unix(),
-		Pruned:        false,
+		Pruned:        chain.IsPruned(),
 		SoftForks: &btcjson.SoftForks{
 			Bip9SoftForks: make(map[string]*btcjson.Bip9SoftForkDescription),
 		},
+	}
+	if chain.IsPruned() {
+		pruneHeight, err := chain.PruneHeight()
+		if err != nil {
+			return nil, internalRPCError(err.Error(), "Unable to find the prune height")
+		}
+		chainInfo.PruneHeight = pruneHeight
 	}
 
 	// Next, populate the response with information describing the current
@@ -3528,6 +3536,24 @@ func handleGetTxOut(s *rpcServer, cmd interface{}, closeChan <-chan struct{}) (i
 }
 
 // handleInvalidateBlock implements the invalidateblock command
+// handleSetPruneHold implements the setprunehold command: an external indexer
+// says how far it has read, so pruning doesn't delete blocks it still needs.
+func handleSetPruneHold(s *rpcServer, cmd interface{}, closeChan <-chan struct{}) (interface{}, error) {
+	c := cmd.(*btcjson.SetPruneHoldCmd)
+	if !s.cfg.Chain.IsPruned() {
+		return nil, &btcjson.RPCError{
+			Code:    btcjson.ErrRPCMisc,
+			Message: "pruning is off (start lbcd with --prune)",
+		}
+	}
+	h := c.Height
+	if h < 0 {
+		h = -1
+	}
+	s.cfg.Chain.SetPruneHold(h)
+	return nil, nil
+}
+
 func handleInvalidateBlock(s *rpcServer, cmd interface{}, closeChan <-chan struct{}) (interface{}, error) {
 	c := cmd.(*btcjson.InvalidateBlockCmd)
 

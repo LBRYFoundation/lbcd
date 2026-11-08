@@ -389,6 +389,16 @@ type Tx interface {
 	// implementations.
 	FetchBlockRegions(regions []BlockRegion) ([][]byte, error)
 
+	// PruneBlocks deletes the oldest block files until the block files use
+	// no more than targetSize bytes, never deleting the file being written
+	// to or any file holding keepFrom (nil: no extra limit) or a later
+	// block.  It returns the hashes of the blocks removed; the files are
+	// deleted when the transaction commits.
+	PruneBlocks(targetSize uint64, keepFrom *chainhash.Hash) ([]chainhash.Hash, error)
+
+	// BeenPruned returns whether block files have ever been pruned.
+	BeenPruned() (bool, error)
+
 	// ******************************************************************
 	// Methods related to both atomic metadata storage and block storage.
 	// ******************************************************************

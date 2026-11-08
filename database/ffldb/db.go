@@ -966,6 +966,9 @@ type transaction struct {
 	pendingBlocks    map[chainhash.Hash]int
 	pendingBlockData []pendingBlock
 
+	// Block files that need to be deleted on commit (pruning).
+	pendingDelFileNums []uint32
+
 	// Keys that need to be stored or deleted on commit.
 	pendingKeys   *treap.Mutable
 	pendingRemove *treap.Mutable
@@ -1593,6 +1596,9 @@ func (tx *transaction) close() {
 	tx.pendingBlocks = nil
 	tx.pendingBlockData = nil
 
+	// Clear pending file deletions.
+	tx.pendingDelFileNums = nil
+
 	// Clear pending keys that would have been written or deleted on commit.
 	tx.pendingKeys = nil
 	tx.pendingRemove = nil
@@ -1619,6 +1625,14 @@ func (tx *transaction) close() {
 //
 // This function MUST only be called when there is pending data to be written.
 func (tx *transaction) writePendingAndCommit() error {
+	// Delete pruned block files first: deletions can't be rolled back, and
+	// the metadata removing their blocks is committed below.
+	for _, fileNum := range tx.pendingDelFileNums {
+		if err := tx.db.store.closeAndDeleteFile(fileNum); err != nil {
+			return err
+		}
+	}
+
 	// Save the current block store write position for potential rollback.
 	// These variables are only updated here in this function and there can
 	// only be one write transaction active at a time, so it's safe to store
@@ -1667,6 +1681,93 @@ func (tx *transaction) writePendingAndCommit() error {
 	// Atomically update the database cache.  The cache automatically
 	// handles flushing to the underlying persistent storage database.
 	return tx.db.cache.commitTx(tx)
+}
+
+// PruneBlocks deletes the oldest block files until the block files use no more
+// than targetSize bytes.  It never deletes the file being written to, nor any
+// file holding keepFrom or a block stored after it, so callers can protect the
+// reorg window and blocks an indexer hasn't read yet.  It returns the hashes of
+// the blocks removed; the files themselves go when the transaction commits.
+//
+// This function is part of the database.Tx interface implementation.
+func (tx *transaction) PruneBlocks(targetSize uint64, keepFrom *chainhash.Hash) ([]chainhash.Hash, error) {
+	if err := tx.checkClosed(); err != nil {
+		return nil, err
+	}
+	if !tx.writable {
+		str := "prune blocks requires a writable database transaction"
+		return nil, makeDbErr(database.ErrTxNotWritable, str, nil)
+	}
+
+	maxSize := uint64(tx.db.store.maxBlockFileSize)
+	if targetSize < maxSize {
+		return nil, fmt.Errorf("got target size of %d but it must be at least "+
+			"%d, the max size of a single block file", targetSize, maxSize)
+	}
+
+	first, last, lastFileSize, err := scanBlockFiles(tx.db.store.basePath)
+	if err != nil {
+		return nil, err
+	}
+	if first == last {
+		return nil, nil // zero or one file: nothing to prune
+	}
+
+	// Files below the one holding keepFrom are the only candidates.
+	limit := uint32(last)
+	if keepFrom != nil {
+		row := tx.blockIdxBucket.Get(keepFrom[:])
+		if row == nil {
+			return nil, nil // can't tell where it is: keep everything
+		}
+		if f := deserializeBlockLoc(row).blockFileNum; f < limit {
+			limit = f
+		}
+	}
+
+	// Every file but the last is (close to) full.
+	totalSize := uint64(lastFileSize) + maxSize*uint64(last-first)
+	if totalSize <= targetSize {
+		return nil, nil
+	}
+
+	deletedFiles := make(map[uint32]struct{})
+	for i := uint32(first); i < limit && totalSize > targetSize; i++ {
+		tx.pendingDelFileNums = append(tx.pendingDelFileNums, i)
+		deletedFiles[i] = struct{}{}
+		totalSize -= maxSize
+	}
+	if len(deletedFiles) == 0 {
+		return nil, nil
+	}
+
+	// Remove the block index entries for blocks in those files.
+	var deleted []chainhash.Hash
+	cursor := tx.blockIdxBucket.Cursor()
+	for ok := cursor.First(); ok; ok = cursor.Next() {
+		loc := deserializeBlockLoc(cursor.Value())
+		if _, found := deletedFiles[loc.blockFileNum]; found {
+			deleted = append(deleted, *(*chainhash.Hash)(cursor.Key()))
+			if err := cursor.Delete(); err != nil {
+				return nil, err
+			}
+		}
+	}
+	log.Debugf("Pruning %d block files (%d blocks), about %d MiB left",
+		len(deletedFiles), len(deleted), totalSize/(1024*1024))
+	return deleted, nil
+}
+
+// BeenPruned returns whether block files have ever been pruned: the first file
+// on disk isn't file 0.
+//
+// This function is part of the database.Tx interface implementation.
+func (tx *transaction) BeenPruned() (bool, error) {
+	first, _, _, err := scanBlockFiles(tx.db.store.basePath)
+	if err != nil {
+		return false, err
+	}
+	return first > 0, nil
 }
 
 // Commit commits all changes that have been made to the root metadata bucket
@@ -2017,7 +2118,11 @@ func openDB(dbPath string, network wire.BitcoinNet, create bool) (database.DB, e
 	// according to the data that is actually on disk.  Also create the
 	// database cache which wraps the underlying leveldb database to provide
 	// write caching.
-	store := newBlockStore(dbPath, network)
+	store, err := newBlockStore(dbPath, network)
+	if err != nil {
+		ldb.Close()
+		return nil, convertErr(err.Error(), err)
+	}
 	cache := newDbCache(ldb, store, defaultCacheSize, defaultFlushSecs)
 	pdb := &db{store: store, cache: cache}
 

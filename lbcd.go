@@ -168,6 +168,37 @@ func btcdMain(serverChan chan<- *server) error {
 		return nil
 	}
 
+	// A pruned database can't go back to keeping every block, or serve the
+	// indexes that need every block.
+	var beenPruned bool
+	if err := db.View(func(dbTx database.Tx) error {
+		var err error
+		beenPruned, err = dbTx.BeenPruned()
+		return err
+	}); err != nil {
+		btcdLog.Errorf("%v", err)
+		return err
+	}
+	if beenPruned && cfg.Prune == 0 {
+		err = fmt.Errorf("--prune cannot be turned off because this node has "+
+			"already pruned blocks: delete the data directory %q to keep "+
+			"every block again", cfg.DataDir)
+		btcdLog.Errorf("%v", err)
+		return err
+	}
+	if cfg.Prune != 0 && indexers.TxIndexInitialized(db) {
+		err = fmt.Errorf("--prune can't be used while the transaction index " +
+			"exists: run once with --droptxindex first")
+		btcdLog.Errorf("%v", err)
+		return err
+	}
+	if cfg.Prune != 0 && indexers.AddrIndexInitialized(db) {
+		err = fmt.Errorf("--prune can't be used while the address index " +
+			"exists: run once with --dropaddrindex first")
+		btcdLog.Errorf("%v", err)
+		return err
+	}
+
 	param.SetNetwork(activeNetParams.Params.Net) // prep the claimtrie params
 
 	go logMemoryUsage()

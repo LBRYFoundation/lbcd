@@ -668,6 +668,10 @@ var helpDescsEnUS = map[string]string{
 	"help--result0":    "List of commands",
 	"help--result1":    "Help for specified command",
 
+	// SetPruneHoldCmd
+	"setprunehold--synopsis": "Stops pruning from deleting blocks above a height, so an external indexer can read them first. Call it again as the indexer advances; a negative height lifts the hold.",
+	"setprunehold-height":    "Highest block height pruning may delete up to (blocks above it are kept); negative to lift the hold",
+
 	// InvalidateBlockCmd
 	"invalidateblock--synopsis": "Invalidate a block.",
 	"invalidateblock-blockhash": "Hash of the block you want to invalidate",
@@ -979,6 +983,7 @@ var rpcResultTypes = map[string][]interface{}{
 	"gettxout":               {(*btcjson.GetTxOutResult)(nil)},
 	"help":                   {(*string)(nil), (*string)(nil)},
 	"invalidateblock":        nil,
+	"setprunehold":           nil,
 	"listbanned":             {(*[]btcjson.ListBannedResult)(nil)},
 	"node":                   nil,
 	"ping":                   nil,

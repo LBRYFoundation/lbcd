@@ -2693,6 +2693,13 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 	if cfg.NoCFilters {
 		services &^= wire.SFNodeCF
 	}
+	if cfg.Prune != 0 {
+		// A pruned node only serves recent blocks (BIP0159).
+		services &^= wire.SFNodeNetwork
+		services |= wire.SFNodeNetworkLimited
+		btcdLog.Infof("Pruning block files to %d MiB, keeping at least the last %d blocks",
+			cfg.Prune, blockchain.MinBlocksToKeep)
+	}
 
 	amgr := addrmgr.New(cfg.DataDir, btcdLookup)
 
@@ -2805,6 +2812,7 @@ func newServer(listenAddrs, agentBlacklist, agentWhitelist []string,
 		IndexManager: indexManager,
 		HashCache:    s.hashCache,
 		ClaimTrie:    ct,
+		Prune:        cfg.Prune * 1024 * 1024,
 	})
 	if err != nil {
 		return nil, err

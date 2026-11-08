@@ -15,6 +15,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/lbryio/lbcd/chaincfg/chainhash"
@@ -23,6 +25,9 @@ import (
 )
 
 const (
+	// blockFileExtension is the extension used for the flat block files.
+	blockFileExtension = ".fdb"
+
 	// The Bitcoin protocol encodes block height as int32, so max number of
 	// blocks is 2^31.  Max block size per the protocol is 32MiB per block.
 	// So the theoretical max at the time this comment was written is 64PiB
@@ -32,7 +37,7 @@ const (
 	// 512MiB each for a total of ~476.84PiB (roughly 7.4 times the current
 	// theoretical max), so there is room for the max block size to grow in
 	// the future.
-	blockFilenameTemplate = "%09d.fdb"
+	blockFilenameTemplate = "%09d" + blockFileExtension
 
 	// maxOpenFiles is the max number of open files to maintain in the
 	// open blocks cache.  Note that this does not include the current
@@ -274,17 +279,7 @@ func (s *blockStore) openFile(fileNum uint32) (*lockableFile, error) {
 	lruList := s.openBlocksLRU
 	if lruList.Len() >= maxOpenFiles {
 		lruFileNum := lruList.Remove(lruList.Back()).(uint32)
-		oldBlockFile := s.openBlockFiles[lruFileNum]
-
-		// Close the old file under the write lock for the file in case
-		// any readers are currently reading from it so it's not closed
-		// out from under them.
-		oldBlockFile.Lock()
-		_ = oldBlockFile.file.Close()
-		oldBlockFile.Unlock()
-
-		delete(s.openBlockFiles, lruFileNum)
-		delete(s.fileNumToLRUElem, lruFileNum)
+		s.closeFile(lruFileNum)
 	}
 	s.fileNumToLRUElem[fileNum] = lruList.PushFront(fileNum)
 	s.lruMutex.Unlock()
@@ -295,11 +290,47 @@ func (s *blockStore) openFile(fileNum uint32) (*lockableFile, error) {
 	return blockFile, nil
 }
 
+// closeFile closes the file for the passed flat file number if it's open, in
+// a concurrency safe manner, and forgets it.  Pruning uses it before deleting
+// a file.
+func (s *blockStore) closeFile(fileNum uint32) {
+	blockFile := s.openBlockFiles[fileNum]
+	if blockFile == nil {
+		return
+	}
+
+	// Close the file under its write lock in case any readers are using it.
+	blockFile.Lock()
+	_ = blockFile.file.Close()
+	blockFile.Unlock()
+
+	if elem, ok := s.fileNumToLRUElem[fileNum]; ok {
+		s.openBlocksLRU.Remove(elem)
+	}
+	delete(s.openBlockFiles, fileNum)
+	delete(s.fileNumToLRUElem, fileNum)
+}
+
+// closeAndDeleteFile closes the passed flat file if it's open and deletes it.
+// Pruning uses it on files holding only old blocks.
+func (s *blockStore) closeAndDeleteFile(fileNum uint32) error {
+	s.obfMutex.Lock()
+	s.lruMutex.Lock()
+	s.closeFile(fileNum)
+	s.lruMutex.Unlock()
+	s.obfMutex.Unlock()
+	return s.deleteFileFunc(fileNum)
+}
+
 // deleteFile removes the block file for the passed flat file number.  The file
 // must already be closed and it is the responsibility of the caller to do any
 // other state cleanup necessary.
 func (s *blockStore) deleteFile(fileNum uint32) error {
 	filePath := blockFilePath(s.basePath, fileNum)
+	if s.openBlockFiles[fileNum] != nil {
+		err := fmt.Errorf("attempted to delete open file at %v", filePath)
+		return makeDbErr(database.ErrDriverSpecific, err.Error(), err)
+	}
 	if err := os.Remove(filePath); err != nil {
 		return makeDbErr(database.ErrDriverSpecific, err.Error(), err)
 	}
@@ -712,37 +743,52 @@ func (s *blockStore) handleRollback(oldBlockFileNum, oldBlockOffset uint32) {
 	}
 }
 
-// scanBlockFiles searches the database directory for all flat block files to
-// find the end of the most recent file.  This position is considered the
-// current write cursor which is also stored in the metadata.  Thus, it is used
-// to detect unexpected shutdowns in the middle of writes so the block files
-// can be reconciled.
-func scanBlockFiles(dbPath string) (int, uint32) {
-	lastFile := -1
-	fileLen := uint32(0)
-	for i := 0; ; i++ {
-		filePath := blockFilePath(dbPath, uint32(i))
-		st, err := os.Stat(filePath)
-		if err != nil {
-			break
-		}
-		lastFile = i
-
-		fileLen = uint32(st.Size())
+// scanBlockFiles searches the database directory for the flat block files and
+// returns the first and last file numbers and the length of the last file.  The
+// end of the last file is considered the current write cursor which is also
+// stored in the metadata, so it's used to detect unexpected shutdowns in the
+// middle of writes.  Files may start above 0 once the node has been pruned.
+// With no block files, first and last are -1.
+func scanBlockFiles(dbPath string) (int, int, uint32, error) {
+	files, err := filepath.Glob(filepath.Join(dbPath, "*"+blockFileExtension))
+	if err != nil {
+		return 0, 0, 0, err
 	}
-
-	log.Tracef("Scan found latest block file #%d with length %d", lastFile,
-		fileLen)
-	return lastFile, fileLen
+	first, last := -1, -1
+	for _, f := range files {
+		n, err := strconv.Atoi(strings.TrimSuffix(filepath.Base(f), blockFileExtension))
+		if err != nil {
+			continue // not one of ours
+		}
+		if first == -1 || n < first {
+			first = n
+		}
+		if n > last {
+			last = n
+		}
+	}
+	if last == -1 {
+		return -1, -1, 0, nil
+	}
+	st, err := os.Stat(blockFilePath(dbPath, uint32(last)))
+	if err != nil {
+		return 0, 0, 0, err
+	}
+	log.Tracef("Scan found block files #%d to #%d, last with length %d",
+		first, last, st.Size())
+	return first, last, uint32(st.Size()), nil
 }
 
 // newBlockStore returns a new block store with the current block file number
 // and offset set and all fields initialized.
-func newBlockStore(basePath string, network wire.BitcoinNet) *blockStore {
+func newBlockStore(basePath string, network wire.BitcoinNet) (*blockStore, error) {
 	// Look for the end of the latest block to file to determine what the
 	// write cursor position is from the viewpoing of the block files on
 	// disk.
-	fileNum, fileOff := scanBlockFiles(basePath)
+	_, fileNum, fileOff, err := scanBlockFiles(basePath)
+	if err != nil {
+		return nil, err
+	}
 	if fileNum == -1 {
 		fileNum = 0
 		fileOff = 0
@@ -765,5 +811,5 @@ func newBlockStore(basePath string, network wire.BitcoinNet) *blockStore {
 	store.openFileFunc = store.openFile
 	store.openWriteFileFunc = store.openWriteFile
 	store.deleteFileFunc = store.deleteFile
-	return store
+	return store, nil
 }

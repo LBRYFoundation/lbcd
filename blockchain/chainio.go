@@ -494,6 +494,17 @@ func dbRemoveSpendJournalEntry(dbTx database.Tx, blockHash *chainhash.Hash) erro
 	return spendBucket.Delete(blockHash[:])
 }
 
+// dbPruneSpendJournalEntry removes the spend journal entries of pruned blocks.
+func dbPruneSpendJournalEntry(dbTx database.Tx, blockHashes []chainhash.Hash) error {
+	spendBucket := dbTx.Metadata().Bucket(spendJournalBucketName)
+	for _, blockHash := range blockHashes {
+		if err := spendBucket.Delete(blockHash[:]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // -----------------------------------------------------------------------------
 // The unspent transaction output (utxo) set consists of an entry for each
 // unspent output using a format that is optimized to reduce space using domain

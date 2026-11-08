@@ -86,6 +86,11 @@ const (
 	// SFNode2X is a flag used to indicate a peer is running the Segwit2X
 	// software.
 	SFNode2X
+
+	// SFNodeNetworkLimited is a flag used to indicate a peer serves only
+	// the most recent blocks (at least the last 288), like a pruned node
+	// (BIP0159).
+	SFNodeNetworkLimited ServiceFlag = 1 << 10
 )
 
 // Map of service flags back to their constant names for pretty printing.
@@ -98,6 +103,8 @@ var sfStrings = map[ServiceFlag]string{
 	SFNodeBit5:    "SFNodeBit5",
 	SFNodeCF:      "SFNodeCF",
 	SFNode2X:      "SFNode2X",
+
+	SFNodeNetworkLimited: "SFNodeNetworkLimited",
 }
 
 // orderedSFStrings is an ordered list of service flags from highest to
@@ -111,6 +118,7 @@ var orderedSFStrings = []ServiceFlag{
 	SFNodeBit5,
 	SFNodeCF,
 	SFNode2X,
+	SFNodeNetworkLimited,
 }
 
 // String returns the ServiceFlag in human-readable form.

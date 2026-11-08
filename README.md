@@ -168,6 +168,30 @@ time curl https://snapshots.lbry.com/blockchain/lbcd_snapshot_1199527_v0.22.105_
 # sys     8m56.545s
 ```
 
+## Pruning (optional)
+
+A pruned node verifies everything and keeps the claim trie, UTXO set and recent
+blocks, but deletes old block files so it fits on a small disk:
+
+``` sh
+lbcd --prune=1024    # keep about 1 GiB of blocks (the minimum)
+```
+
+- The value is in MiB. Block files are 512 MiB each, so storage moves in steps of
+  that size, and the newest 288 blocks are always kept for reorgs.
+- `--txindex` and `--addrindex` need every block, so pruning turns the
+  transaction index off and refuses to start with `--addrindex`. On a node that
+  already built one, drop it first: `lbcd --droptxindex` / `lbcd --dropaddrindex`.
+- A pruned node advertises `NODE_NETWORK_LIMITED` instead of `NODE_NETWORK`.
+- Once pruned, a data directory can't go back to an unpruned node: start with
+  `--prune` every time, or resync.
+- `getblockchaininfo` reports `pruned` and `pruneheight` (the lowest block
+  still stored).
+- `setprunehold <height>` stops pruning from deleting anything above `height`,
+  for an indexer that reads blocks over RPC and must not fall behind the
+  pruning window. `setprunehold -- -1` lifts it (the `--` stops lbcctl reading `-1` as a flag). The hold isn't saved across
+  restarts.
+
 ## Working with RPCs
 
 Using `lbcctl -l` to list available RPCs:

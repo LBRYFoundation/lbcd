@@ -695,3 +695,23 @@ func dropIndex(db database.DB, idxKey []byte, idxName string, interrupt <-chan s
 	log.Infof("Dropped %s", idxName)
 	return nil
 }
+
+// indexInitialized reports whether the index with the passed key has been
+// created in the database (it has a tip recorded).
+func indexInitialized(db database.DB, idxKey []byte) bool {
+	var exists bool
+	_ = db.View(func(dbTx database.Tx) error {
+		bucket := dbTx.Metadata().Bucket(indexTipsBucketName)
+		exists = bucket != nil && bucket.Get(idxKey) != nil
+		return nil
+	})
+	return exists
+}
+
+// TxIndexInitialized reports whether the transaction index exists in the
+// database.  Pruning can't be used with it.
+func TxIndexInitialized(db database.DB) bool { return indexInitialized(db, txIndexKey) }
+
+// AddrIndexInitialized reports whether the address index exists in the
+// database.  Pruning can't be used with it.
+func AddrIndexInitialized(db database.DB) bool { return indexInitialized(db, addrIndexKey) }

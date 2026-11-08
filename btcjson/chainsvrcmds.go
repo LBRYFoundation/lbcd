@@ -766,6 +766,18 @@ func NewInvalidateBlockCmd(blockHash string) *InvalidateBlockCmd {
 	}
 }
 
+// SetPruneHoldCmd defines the setprunehold JSON-RPC command: stop pruning
+// from deleting blocks above Height (a negative height lifts the hold).
+type SetPruneHoldCmd struct {
+	Height int32
+}
+
+// NewSetPruneHoldCmd returns a new instance which can be used to issue a
+// setprunehold JSON-RPC command.
+func NewSetPruneHoldCmd(height int32) *SetPruneHoldCmd {
+	return &SetPruneHoldCmd{Height: height}
+}
+
 // ListBannedCmd defines the listbanned JSON-RPC command.
 type ListBannedCmd struct{}
 
@@ -1142,6 +1154,7 @@ func init() {
 	MustRegisterCmd("getwork", (*GetWorkCmd)(nil), flags)
 	MustRegisterCmd("help", (*HelpCmd)(nil), flags)
 	MustRegisterCmd("invalidateblock", (*InvalidateBlockCmd)(nil), flags)
+	MustRegisterCmd("setprunehold", (*SetPruneHoldCmd)(nil), flags)
 	MustRegisterCmd("ping", (*PingCmd)(nil), flags)
 	MustRegisterCmd("preciousblock", (*PreciousBlockCmd)(nil), flags)
 	MustRegisterCmd("reconsiderblock", (*ReconsiderBlockCmd)(nil), flags)

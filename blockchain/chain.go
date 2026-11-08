@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"math/big"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/lbryio/lbcd/chaincfg"
@@ -100,11 +101,18 @@ type BlockChain struct {
 	checkpoints         []chaincfg.Checkpoint
 	checkpointsByHeight map[int32]*chaincfg.Checkpoint
 	db                  database.DB
-	chainParams         *chaincfg.Params
-	timeSource          MedianTimeSource
-	sigCache            *txscript.SigCache
-	indexManager        IndexManager
-	hashCache           *txscript.HashCache
+
+	// pruneTarget is the size in bytes the block files are kept under when
+	// pruning (0 = keep every block).  pruneHold, when not negative, is a
+	// height pruning must not go above, so an external indexer can read
+	// blocks before they're deleted (see SetPruneHold).
+	pruneTarget  uint64
+	pruneHold    int32
+	chainParams  *chaincfg.Params
+	timeSource   MedianTimeSource
+	sigCache     *txscript.SigCache
+	indexManager IndexManager
+	hashCache    *txscript.HashCache
 
 	// The following fields are calculated based upon the provided chain
 	// parameters.  They are also set when the instance is created and
@@ -628,6 +636,14 @@ func (b *BlockChain) connectBlock(node *blockNode, block *btcutil.Block,
 
 	// Atomically insert info into the database.
 	err = b.db.Update(func(dbTx database.Tx) error {
+		// Prune old block files, keeping the reorg window and anything an
+		// indexer is still holding.
+		if b.pruneTarget != 0 {
+			if err := b.pruneBlocks(dbTx, node); err != nil {
+				return err
+			}
+		}
+
 		// Update best block state.
 		err := dbPutBestState(dbTx, state, node.workSum)
 		if err != nil {
@@ -1911,6 +1927,11 @@ type Config struct {
 	HashCache *txscript.HashCache
 
 	ClaimTrie *claimtrie.ClaimTrie
+
+	// Prune specifies the size in bytes the block files are kept under by
+	// deleting the oldest ones.  0 keeps every block.  The last
+	// MinBlocksToKeep blocks are always kept.
+	Prune uint64
 }
 
 // New returns a BlockChain instance using the provided configuration details.
@@ -1966,6 +1987,8 @@ func New(config *Config) (*BlockChain, error) {
 		warningCaches:       newThresholdCaches(vbNumBits),
 		deploymentCaches:    newThresholdCaches(chaincfg.DefinedDeployments),
 		claimTrie:           config.ClaimTrie,
+		pruneTarget:         config.Prune,
+		pruneHold:           -1,
 	}
 
 	// Initialize the chain state from the passed database.  When the db
@@ -2033,6 +2056,24 @@ func rebuildMissingClaimTrieData(b *BlockChain, done <-chan struct{}) error {
 		return b.claimTrie.ResetHeight(target)
 	}
 
+	// Rebuilding replays every block from genesis, which a pruned node no
+	// longer has.
+	var pruned bool
+	err := b.db.View(func(dbTx database.Tx) error {
+		var err error
+		pruned, err = dbTx.BeenPruned()
+		return err
+	})
+	if err != nil {
+		return err
+	}
+	if pruned {
+		return fmt.Errorf("the claim trie is at height %d but the chain is at %d, "+
+			"and rebuilding it needs every block from genesis, which this pruned "+
+			"node has deleted: remove the data directory and sync again",
+			b.claimTrie.Height(), target)
+	}
+
 	start := time.Now()
 	lastReport := time.Now()
 	// TODO: move this view inside the loop (or recreate it every 5 sec.)
@@ -2082,4 +2123,88 @@ func rebuildMissingClaimTrieData(b *BlockChain, done <-chan struct{}) error {
 	log.Infof("Completed rebuilding claim trie data to %d. Took %s ",
 		b.claimTrie.Height(), time.Since(start))
 	return nil
+}
+
+// MinBlocksToKeep is how many of the newest blocks (with their spend journals) a
+// pruned node always keeps, so it can still handle a reorg that deep.
+const MinBlocksToKeep = 288
+
+// pruneBlocks deletes old block files and their spend journals within the
+// database transaction that connects node.  It never removes the last
+// MinBlocksToKeep blocks, nor blocks above the prune hold.
+func (b *BlockChain) pruneBlocks(dbTx database.Tx, node *blockNode) error {
+	keepHeight := node.height - MinBlocksToKeep
+	if hold := atomic.LoadInt32(&b.pruneHold); hold >= 0 && hold < keepHeight {
+		keepHeight = hold
+	}
+	if keepHeight <= 0 {
+		return nil
+	}
+	keep := node.Ancestor(keepHeight)
+	if keep == nil {
+		return nil
+	}
+	deleted, err := dbTx.PruneBlocks(b.pruneTarget, &keep.hash)
+	if err != nil {
+		return err
+	}
+	if len(deleted) == 0 {
+		return nil
+	}
+	return dbPruneSpendJournalEntry(dbTx, deleted)
+}
+
+// SetPruneHold stops pruning from deleting blocks above height (or lifts the
+// hold with a negative height).  An external indexer calls it (via the
+// setprunehold RPC) with the last height it has read, so blocks aren't pruned
+// before it gets to them.
+func (b *BlockChain) SetPruneHold(height int32) {
+	atomic.StoreInt32(&b.pruneHold, height)
+}
+
+// PruneHold returns the current hold height, or -1 for none.
+func (b *BlockChain) PruneHold() int32 {
+	return atomic.LoadInt32(&b.pruneHold)
+}
+
+// IsPruned reports whether pruning is on for this chain.
+func (b *BlockChain) IsPruned() bool {
+	return b.pruneTarget != 0
+}
+
+// PruneHeight returns the lowest main-chain height whose block is still stored
+// (0 when nothing has been pruned).  Pruning deletes the oldest blocks first, so
+// a binary search over heights finds the boundary.
+func (b *BlockChain) PruneHeight() (int32, error) {
+	tip := b.bestChain.Tip()
+	if tip == nil || b.pruneTarget == 0 {
+		return 0, nil
+	}
+	have := func(height int32) (bool, error) {
+		node := b.bestChain.NodeByHeight(height)
+		if node == nil {
+			return false, nil
+		}
+		var ok bool
+		err := b.db.View(func(dbTx database.Tx) error {
+			var err error
+			ok, err = dbTx.HasBlock(&node.hash)
+			return err
+		})
+		return ok, err
+	}
+	lo, hi := int32(0), tip.height
+	for lo < hi {
+		mid := lo + (hi-lo)/2
+		ok, err := have(mid)
+		if err != nil {
+			return 0, err
+		}
+		if ok {
+			hi = mid
+		} else {
+			lo = mid + 1
+		}
+	}
+	return lo, nil
 }

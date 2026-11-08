@@ -67,6 +67,7 @@ const (
 	defaultSigCacheMaxSize       = 100000
 	sampleConfigFilename         = "sample-lbcd.conf"
 	defaultTxIndex               = true
+	pruneMinSize                 = 1024 // MiB: two 512 MiB block files
 	defaultAddrIndex             = false
 	defaultUpnp                  = true
 )
@@ -175,6 +176,7 @@ type config struct {
 	TestNet3             bool          `long:"testnet" description:"Use the test network"`
 	TorIsolation         bool          `long:"torisolation" description:"Enable Tor stream isolation by randomizing user credentials for each connection."`
 	TrickleInterval      time.Duration `long:"trickleinterval" description:"Minimum time between attempts to send new inventory to a connected peer"`
+	Prune                uint64        `long:"prune" description:"Prune already validated blocks from the database, keeping the block files under this many MiB (minimum 1024; 0, the default, keeps every block). The newest 288 blocks are always kept. Turns off the transaction index."`
 	TxIndex              bool          `long:"txindex" description:"Maintain a full hash-based transaction index which makes all transactions available via the getrawtransaction RPC"`
 	UserAgentComments    []string      `long:"uacomment" description:"Comment to add to the user agent -- See BIP 14 for more information."`
 	Upnp                 bool          `long:"upnp" description:"Use UPnP to map our listening port outside of NAT"`
@@ -898,6 +900,27 @@ func loadConfig() (*config, []string, error) {
 			fmt.Fprintln(os.Stderr, usageMessage)
 			return nil, nil, err
 		}
+	}
+
+	// Pruning: a minimum size, and no indexes that need every block.  The
+	// transaction index is on by default, so pruning turns it off; asking
+	// for the address index as well is an error.
+	if cfg.Prune != 0 {
+		if cfg.Prune < pruneMinSize {
+			err := fmt.Errorf("%s: the minimum value for --prune is %d MiB, got %d",
+				funcName, pruneMinSize, cfg.Prune)
+			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, usageMessage)
+			return nil, nil, err
+		}
+		if cfg.AddrIndex {
+			err := fmt.Errorf("%s: the --prune and --addrindex options may "+
+				"not be activated at the same time", funcName)
+			fmt.Fprintln(os.Stderr, err)
+			fmt.Fprintln(os.Stderr, usageMessage)
+			return nil, nil, err
+		}
+		cfg.TxIndex = false
 	}
 
 	// --txindex and --droptxindex do not mix.
