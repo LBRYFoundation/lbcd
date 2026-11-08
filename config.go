@@ -923,14 +923,11 @@ func loadConfig() (*config, []string, error) {
 		cfg.TxIndex = false
 	}
 
-	// --txindex and --droptxindex do not mix.
-	if cfg.TxIndex && cfg.DropTxIndex {
-		err := fmt.Errorf("%s: the --txindex and --droptxindex "+
-			"options may  not be activated at the same time",
-			funcName)
-		fmt.Fprintln(os.Stderr, err)
-		fmt.Fprintln(os.Stderr, usageMessage)
-		return nil, nil, err
+	// --droptxindex turns the transaction index off. lbcd builds it by
+	// default (and --txindex is a plain switch that can't be set false), so
+	// refusing the combination made --droptxindex impossible to use.
+	if cfg.DropTxIndex {
+		cfg.TxIndex = false
 	}
 
 	// --addrindex and --dropaddrindex do not mix.
