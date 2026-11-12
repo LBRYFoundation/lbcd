@@ -16,7 +16,7 @@ provided by [lbcwallet](https://github.com/LBRYFoundation/lbcwallet) and the
 
 ## Requirements
 
-[Go](http://golang.org) 1.25 or newer. All common operating systems are
+[Go](http://golang.org) 1.26.10 or newer. All common operating systems are
 supported. A node needs a fair amount of RAM and disk space, both of which grow
 slowly over time; a fast NVMe disk is recommended.
 

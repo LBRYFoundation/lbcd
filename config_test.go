@@ -8,6 +8,60 @@ import (
 	"testing"
 )
 
+func TestValidateMaxPeers(t *testing.T) {
+	tests := []struct {
+		name     string
+		maxPeers int
+		wantErr  bool
+	}{
+		{name: "negative", maxPeers: -1, wantErr: true},
+		{name: "zero", wantErr: true},
+		{name: "positive", maxPeers: 1},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := validateMaxPeers(test.maxPeers)
+			if test.wantErr && err == nil {
+				t.Fatal("expected validation error")
+			}
+			if !test.wantErr && err != nil {
+				t.Fatalf("unexpected validation error: %v", err)
+			}
+		})
+	}
+}
+
+// TestProxyTorIsolation checks when --torisolation applies to --proxy: always,
+// unless --onion is set too, in which case it applies to the onion proxy.
+func TestProxyTorIsolation(t *testing.T) {
+	tests := []struct {
+		name         string
+		torIsolation bool
+		onionProxy   string
+		want         bool
+	}{
+		{name: "isolation", torIsolation: true, want: true},
+		{name: "no isolation"},
+		{
+			name:         "bridge mode",
+			torIsolation: true,
+			onionProxy:   "127.0.0.1:9050",
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got := proxyTorIsolation(
+				test.torIsolation, test.onionProxy,
+			)
+			if got != test.want {
+				t.Fatalf("got %v, want %v", got, test.want)
+			}
+		})
+	}
+}
+
 var (
 	rpcuserRegexp = regexp.MustCompile("(?m)^rpcuser=.+$")
 	rpcpassRegexp = regexp.MustCompile("(?m)^rpcpass=.+$")

@@ -6,7 +6,6 @@ package psbt
 
 import (
 	"bytes"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"io"
@@ -278,22 +277,68 @@ func getKey(r io.Reader) (int, []byte, error) {
 	return int(keyType), keyData, nil
 }
 
-// readTxOut is a limited version of wire.ReadTxOut, because the latter is not
-// exported.
-func readTxOut(txout []byte) (*wire.TxOut, error) {
-	if len(txout) < 10 {
-		return nil, ErrInvalidPsbtFormat
+// assertFullyConsumed returns ErrInvalidPsbtFormat if r still has bytes
+// available after parsing.
+func assertFullyConsumed(r *bytes.Reader) error {
+	if r.Len() > 0 {
+		return ErrInvalidPsbtFormat
 	}
 
-	valueSer := binary.LittleEndian.Uint64(txout[:8])
-	scriptPubKey := txout[9:]
+	return nil
+}
 
-	return wire.NewTxOut(int64(valueSer), scriptPubKey), nil
+// readTxOut parses a transaction output value and requires the full value to
+// be consumed.
+func readTxOut(txout []byte) (*wire.TxOut, error) {
+	txOut := &wire.TxOut{}
+	reader := bytes.NewReader(txout)
+
+	if err := wire.ReadTxOut(reader, 0, 0, txOut); err != nil {
+		return nil, err
+	}
+	if err := assertFullyConsumed(reader); err != nil {
+		return nil, err
+	}
+
+	// wire.ReadTxOut stores PkScript in an internal 4 MiB script slab.
+	// Compact it before storing the TxOut in the PSBT so tiny witness
+	// scripts do not retain the full slab.
+	script := make([]byte, len(txOut.PkScript))
+	copy(script, txOut.PkScript)
+	txOut.PkScript = script
+
+	return txOut, nil
+}
+
+// readTransaction parses a transaction value and requires the full value to
+// be consumed. PSBT transaction-valued fields contain exactly one network
+// serialized transaction, not a transaction prefix with arbitrary trailing
+// data.
+func readTransaction(txBytes []byte, noWitness bool) (*wire.MsgTx, error) {
+	tx := wire.NewMsgTx(2)
+	reader := bytes.NewReader(txBytes)
+
+	var err error
+	if noWitness {
+		err = tx.DeserializeNoWitness(reader)
+	} else {
+		err = tx.Deserialize(reader)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	if err := assertFullyConsumed(reader); err != nil {
+		return nil, err
+	}
+
+	return tx, nil
 }
 
 // SumUtxoInputValues tries to extract the sum of all inputs specified in the
-// UTXO fields of the PSBT. An error is returned if an input is specified that
-// does not contain any UTXO information.
+// UTXO fields of the PSBT. An error is returned for missing UTXO information,
+// an invalid previous-output index, or conflicting witness and non-witness
+// output descriptions. Consistency does not authenticate the supplied UTXOs.
 func SumUtxoInputValues(packet *Packet) (int64, error) {
 	// We take the TX ins of the unsigned TX as the truth for how many
 	// inputs there should be, as the fields in the extra data part of the
@@ -306,10 +351,6 @@ func SumUtxoInputValues(packet *Packet) (int64, error) {
 	inputSum := int64(0)
 	for idx, in := range packet.Inputs {
 		switch {
-		case in.WitnessUtxo != nil:
-			// Witness UTXOs only need to reference the TxOut.
-			inputSum += in.WitnessUtxo.Value
-
 		case in.NonWitnessUtxo != nil:
 			// Non-witness UTXOs reference to the whole transaction
 			// the UTXO resides in.
@@ -324,7 +365,20 @@ func SumUtxoInputValues(packet *Packet) (int64, error) {
 					"TxOut field", idx)
 			}
 
-			inputSum += utxOuts[txIn.PreviousOutPoint.Index].Value
+			// Reconcile descriptions so their precedence cannot
+			// change the reported fee.
+			prevOut := utxOuts[opIdx]
+			if in.WitnessUtxo != nil &&
+				!TxOutsEqual(prevOut, in.WitnessUtxo) {
+
+				return 0, fmt.Errorf("input %d has "+
+					"conflicting UTXO information", idx)
+			}
+			inputSum += prevOut.Value
+
+		case in.WitnessUtxo != nil:
+			// Witness UTXOs only need to reference the TxOut.
+			inputSum += in.WitnessUtxo.Value
 
 		default:
 			return 0, fmt.Errorf("input %d has no UTXO information",
@@ -464,7 +518,16 @@ func NewFromSignedTx(tx *wire.MsgTx) (*Packet, [][]byte,
 func FindLeafScript(pInput *PInput,
 	targetLeafHash []byte) (*TaprootTapLeafScript, error) {
 
-	for _, leaf := range pInput.TaprootLeafScript {
+	if pInput == nil {
+		return nil, fmt.Errorf("nil PSBT input: %w", ErrInvalidPsbtFormat)
+	}
+
+	for idx, leaf := range pInput.TaprootLeafScript {
+		if leaf == nil {
+			return nil, fmt.Errorf("nil taproot leaf script at index "+
+				"%d: %w", idx, ErrInvalidPsbtFormat)
+		}
+
 		leafHash := txscript.TapLeaf{
 			LeafVersion: leaf.LeafVersion,
 			Script:      leaf.Script,

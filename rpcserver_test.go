@@ -1,15 +1,20 @@
 package main
 
 import (
+	"bytes"
 	"encoding/hex"
 	"errors"
 	"testing"
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/btcutil/v2"
+	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/database"
 	"github.com/btcsuite/btcd/mempool"
+	"github.com/btcsuite/btcd/mempool/mempooltest"
 	"github.com/btcsuite/btcd/wire/v2"
+	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/require"
 )
 
@@ -67,6 +72,173 @@ func TestHandleTestMempoolAcceptFailDecode(t *testing.T) {
 	}
 }
 
+// TestHandleTestMempoolAcceptRejectsTrailingBytes ensures testmempoolaccept
+// rejects byte strings that contain a valid transaction plus trailing data.
+func TestHandleTestMempoolAcceptRejectsTrailingBytes(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		recovered := recover()
+		require.Nil(t, recovered, "handler reached mempool")
+	}()
+
+	cmd := btcjson.NewTestMempoolAcceptCmd([]string{txHex1 + "00"}, 0)
+	result, err := handleTestMempoolAccept(
+		&rpcServer{}, cmd, make(chan struct{}),
+	)
+
+	requireRPCErrorCode(t, err, btcjson.ErrRPCDeserialization)
+	require.Nil(t, result)
+}
+
+// requireRPCErrorCode asserts that the error is an RPC error with the expected
+// error code.
+func requireRPCErrorCode(t *testing.T, err error, code btcjson.RPCErrorCode) {
+	t.Helper()
+
+	require.Error(t, err)
+	rpcErr, ok := err.(*btcjson.RPCError)
+	require.True(t, ok)
+	require.Equal(t, code, rpcErr.Code)
+}
+
+// blockHexWithTrailingByte serializes a valid block and appends one extra byte.
+func blockHexWithTrailingByte(t *testing.T) string {
+	t.Helper()
+
+	var block bytes.Buffer
+	err := chaincfg.MainNetParams.GenesisBlock.Serialize(&block)
+	require.NoError(t, err)
+
+	return hex.EncodeToString(append(block.Bytes(), 0x00))
+}
+
+// invalidatingBlockDB clears fetched block bytes as soon as its managed view
+// ends. This models database backends whose zero-copy buffers are only valid
+// for the lifetime of a transaction.
+type invalidatingBlockDB struct {
+	database.DB
+	blockBytes []byte
+}
+
+// View runs the callback with a transaction backed by the configured block
+// bytes, then invalidates those bytes before returning.
+func (d *invalidatingBlockDB) View(fn func(database.Tx) error) error {
+	err := fn(&invalidatingBlockTx{blockBytes: d.blockBytes})
+	clear(d.blockBytes)
+
+	return err
+}
+
+// invalidatingBlockTx returns the parent database's transaction-scoped block
+// bytes.
+type invalidatingBlockTx struct {
+	database.Tx
+	blockBytes []byte
+}
+
+// FetchBlock returns bytes that are invalidated when the enclosing view ends.
+func (t *invalidatingBlockTx) FetchBlock(*chainhash.Hash) ([]byte, error) {
+	return t.blockBytes, nil
+}
+
+// TestHandleGetBlockCopiesTransactionBytes verifies getblock does not retain
+// transaction-scoped database memory after its managed view ends.
+func TestHandleGetBlockCopiesTransactionBytes(t *testing.T) {
+	t.Parallel()
+
+	var serializedBlock bytes.Buffer
+	err := chaincfg.MainNetParams.GenesisBlock.Serialize(&serializedBlock)
+	require.NoError(t, err)
+
+	wantBytes := serializedBlock.Bytes()
+	dbBytes := append([]byte(nil), wantBytes...)
+	dbBytes = append(dbBytes, 0x00)
+	db := &invalidatingBlockDB{blockBytes: dbBytes}
+
+	verbosity := 0
+	cmd := btcjson.NewGetBlockCmd(
+		chaincfg.MainNetParams.GenesisHash.String(), &verbosity,
+	)
+	result, err := handleGetBlock(
+		&rpcServer{cfg: rpcserverConfig{DB: db}}, cmd, make(chan struct{}),
+	)
+	require.NoError(t, err)
+	require.Equal(t, hex.EncodeToString(wantBytes), result)
+}
+
+// TestHandleSendRawTransactionRejectsTrailingBytes ensures sendrawtransaction
+// rejects byte strings that contain a valid transaction plus trailing data.
+func TestHandleSendRawTransactionRejectsTrailingBytes(t *testing.T) {
+	t.Parallel()
+
+	mm := &mempooltest.MockTxMempool{}
+	mm.On(
+		"ProcessTransaction", mock.Anything, false, false, mempool.Tag(0),
+	).Return(nil, errors.New("mempool should not be reached")).Maybe()
+
+	s := &rpcServer{cfg: rpcserverConfig{
+		TxMemPool: mm,
+	}}
+	cmd := btcjson.NewSendRawTransactionCmd(txHex1+"00", nil)
+
+	result, err := handleSendRawTransaction(s, cmd, make(chan struct{}))
+	requireRPCErrorCode(t, err, btcjson.ErrRPCDeserialization)
+	require.Nil(t, result)
+}
+
+// TestHandleDecodeRawTransactionRejectsTrailingBytes ensures
+// decoderawtransaction rejects byte strings that contain a valid transaction
+// plus trailing data.
+func TestHandleDecodeRawTransactionRejectsTrailingBytes(t *testing.T) {
+	t.Parallel()
+
+	cmd := btcjson.NewDecodeRawTransactionCmd(txHex1 + "00")
+	result, err := handleDecodeRawTransaction(
+		&rpcServer{}, cmd, make(chan struct{}),
+	)
+
+	requireRPCErrorCode(t, err, btcjson.ErrRPCDeserialization)
+	require.Nil(t, result)
+}
+
+// TestHandleGetBlockTemplateProposalRejectsTrailingBytes ensures proposal mode
+// rejects byte strings that contain a valid block plus trailing data.
+func TestHandleGetBlockTemplateProposalRejectsTrailingBytes(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		recovered := recover()
+		require.Nil(t, recovered, "handler reached chain state")
+	}()
+
+	request := &btcjson.TemplateRequest{
+		Mode: "proposal",
+		Data: blockHexWithTrailingByte(t),
+	}
+
+	result, err := handleGetBlockTemplateProposal(&rpcServer{}, request)
+	requireRPCErrorCode(t, err, btcjson.ErrRPCDeserialization)
+	require.Nil(t, result)
+}
+
+// TestHandleSubmitBlockRejectsTrailingBytes ensures submitblock rejects byte
+// strings that contain a valid block plus trailing data.
+func TestHandleSubmitBlockRejectsTrailingBytes(t *testing.T) {
+	t.Parallel()
+
+	defer func() {
+		recovered := recover()
+		require.Nil(t, recovered, "handler reached sync manager")
+	}()
+
+	cmd := btcjson.NewSubmitBlockCmd(blockHexWithTrailingByte(t), nil)
+	result, err := handleSubmitBlock(&rpcServer{}, cmd, make(chan struct{}))
+
+	requireRPCErrorCode(t, err, btcjson.ErrRPCDeserialization)
+	require.Nil(t, result)
+}
+
 var (
 	// TODO(yy): make a `btctest` package and move these testing txns there
 	// so they be used in other tests.
@@ -115,7 +287,7 @@ func TestHandleTestMempoolAcceptMixedResults(t *testing.T) {
 	require := require.New(t)
 
 	// Create a mock mempool.
-	mm := &mempool.MockTxMempool{}
+	mm := &mempooltest.MockTxMempool{}
 
 	// Create a testing server with the mock mempool.
 	s := &rpcServer{cfg: rpcserverConfig{
@@ -294,7 +466,7 @@ func TestHandleTestMempoolAcceptFees(t *testing.T) {
 	t.Parallel()
 
 	// Create a mock mempool.
-	mm := &mempool.MockTxMempool{}
+	mm := &mempooltest.MockTxMempool{}
 
 	// Create a testing server with the mock mempool.
 	s := &rpcServer{cfg: rpcserverConfig{
@@ -421,7 +593,7 @@ func TestGetTxSpendingPrevOut(t *testing.T) {
 	require := require.New(t)
 
 	// Create a mock mempool.
-	mm := &mempool.MockTxMempool{}
+	mm := &mempooltest.MockTxMempool{}
 	defer mm.AssertExpectations(t)
 
 	// Create a testing server with the mock mempool.
