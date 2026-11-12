@@ -43,6 +43,28 @@ var (
 // io.Writer, and return the buffer to the free list.
 type binaryFreeList chan []byte
 
+// Borrow returns a byte slice from the free list with a length of 8.  A new
+// buffer is allocated if there are not any available on the free list.
+func (l binaryFreeList) Borrow() []byte {
+	var buf []byte
+	select {
+	case buf = <-l:
+	default:
+		buf = make([]byte, 8)
+	}
+	return buf[:8]
+}
+
+// Return puts the provided byte slice back on the free list.  The buffer MUST
+// have been obtained via the Borrow function and therefore have a cap of 8.
+func (l binaryFreeList) Return(buf []byte) {
+	select {
+	case l <- buf:
+	default:
+		// Let it go to the garbage collector.
+	}
+}
+
 // Uint8 reads a single byte from the provided reader using a buffer from the
 // free list and returns it as a uint8.
 func (l binaryFreeList) Uint8(r io.Reader) (uint8, error) {
