@@ -4,7 +4,6 @@ lbcd
 [![Build Status](https://github.com/LBRYFoundation/lbcd/workflows/Build%20and%20Test/badge.svg)](https://github.com/LBRYFoundation/lbcd/actions)
 [![Coverage Status](https://coveralls.io/repos/github/LBRYFoundation/lbcd/badge.svg?branch=master)](https://coveralls.io/github/LBRYFoundation/lbcd?branch=master)
 [![ISC License](https://img.shields.io/badge/license-ISC-blue.svg)](http://copyfree.org)
-[![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](https://pkg.go.dev/github.com/LBRYFoundation/lbcd)
 
 
 **lbcd** is a full node implementation of the LBRY blockchain written in Go
@@ -12,8 +11,8 @@ lbcd
 transactions, and maintains a transaction pool.
 
 Note: **lbcd** does *NOT* include wallet functionality. That functionality is
-provided by [lbcwallet](https://github.com/lbryio/lbcwallet) and the
-[LBRY SDK](https://github.com/lbryio/lbry-sdk).
+provided by [lbcwallet](https://github.com/LBRYFoundation/lbcwallet) and the
+[LBRY SDK](https://github.com/LBRYFoundation/lbry-sdk).
 
 ## Requirements
 
