@@ -6,7 +6,7 @@ lbcd
 [![ISC License](https://img.shields.io/badge/license-ISC-blue.svg)](http://copyfree.org)
 [![GoDoc](https://img.shields.io/badge/godoc-reference-blue.svg)](https://pkg.go.dev/github.com/LBRYFoundation/lbcd)
 
-btcd is an alternative full node bitcoin implementation written in Go (golang).
+lbcd is an alternative full node bitcoin implementation written in Go (golang).
 
 This project is currently under active development and is in a Beta state.  It
 is extremely stable and has been in production use since October 2013.
