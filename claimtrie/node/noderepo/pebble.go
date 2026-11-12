@@ -178,6 +178,39 @@ func (repo *Pebble) DropChanges(name []byte, finalHeight int32) error {
 	return errors.Wrapf(err, "in set at %s", name)
 }
 
+func (repo *Pebble) DropChangesAbove(finalHeight int32) ([][]byte, error) {
+	var names [][]byte
+
+	// scans every node, so this is only meant for recovery at startup
+	iter := repo.db.NewIter(nil)
+	for iter.First(); iter.Valid(); iter.Next() {
+		// NOTE! iter.Key() is ephemeral!
+		changes, err := unmarshalChanges(iter.Key(), iter.Value())
+		if err != nil {
+			iter.Close()
+			return nil, errors.Wrapf(err, "from unmarshaller at %s", iter.Key())
+		}
+		for i := range changes {
+			if changes[i].Height > finalHeight || changes[i].VisibleHeight > finalHeight {
+				name := make([]byte, len(iter.Key()))
+				copy(name, iter.Key())
+				names = append(names, name)
+				break
+			}
+		}
+	}
+	if err := iter.Close(); err != nil {
+		return nil, errors.Wrap(err, "in close")
+	}
+
+	for _, name := range names {
+		if err := repo.DropChanges(name, finalHeight); err != nil {
+			return nil, err
+		}
+	}
+	return names, nil
+}
+
 func (repo *Pebble) IterateChildren(name []byte, f func(changes []change.Change) bool) error {
 	start := make([]byte, len(name)+1) // zeros that last byte; need a constant len for stack alloc?
 	copy(start, name)

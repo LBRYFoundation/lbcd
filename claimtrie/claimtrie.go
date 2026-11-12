@@ -353,6 +353,16 @@ func (ct *ClaimTrie) ResetHeight(height int32) error {
 	return errors.WithStack(ct.blockRepo.Delete(height+1, oldHeight))
 }
 
+// DropChangesAboveHeight discards node changes persisted for blocks above the
+// current height. The claim trie's repos are written independently, so after
+// an unclean shutdown the node repo can hold changes for blocks that the block
+// repo never recorded. Replaying those blocks would then apply their changes
+// twice. It returns the number of names that were modified.
+func (ct *ClaimTrie) DropChangesAboveHeight() (int, error) {
+	names, err := ct.nodeManager.DropChangesAboveHeight()
+	return len(names), errors.Wrap(err, "in drop changes above height")
+}
+
 func (ct *ClaimTrie) runFullTrieRebuild(names [][]byte, interrupt <-chan struct{}) {
 	if names == nil {
 		node.Log("Building the entire claim trie in RAM...")

@@ -17,6 +17,10 @@ type Repo interface {
 
 	DropChanges(name []byte, finalHeight int32) error
 
+	// DropChangesAbove drops changes above finalHeight from every node.
+	// It returns the names of the nodes that were modified.
+	DropChangesAbove(finalHeight int32) ([][]byte, error)
+
 	// Close closes the repo.
 	Close() error
 
