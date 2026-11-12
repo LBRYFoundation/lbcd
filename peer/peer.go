@@ -22,11 +22,11 @@ import (
 	"github.com/btcsuite/btcd/blockchain"
 	"github.com/btcsuite/btcd/chaincfg/v2"
 	"github.com/btcsuite/btcd/chainhash/v2"
+	"github.com/btcsuite/btcd/internal/socks"
 	"github.com/btcsuite/btcd/v2transport"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/btcsuite/go-socks/socks"
 	"github.com/davecgh/go-spew/spew"
-	"github.com/decred/dcrd/lru"
+	"github.com/decred/dcrd/container/lru"
 )
 
 const (
@@ -85,7 +85,7 @@ var (
 
 	// sentNonces houses the unique nonces that are generated when pushing
 	// version messages that are used to detect self connections.
-	sentNonces = lru.NewCache(50)
+	sentNonces = lru.NewSet[uint64](50)
 )
 
 // MessageListeners defines callback function pointers to invoke with message
@@ -292,6 +292,11 @@ type Config struct {
 	// UsingV2Conn is defined if and only if we accept and attempt to make
 	// v2 connections.
 	UsingV2Conn bool
+
+	// V2HandshakeAdmission optionally reserves resources for the CPU-bound
+	// portion of an inbound v2 handshake.  It is not used for outbound
+	// handshakes or v1 fallback.
+	V2HandshakeAdmission v2transport.HandshakeAdmission
 }
 
 // minUint32 is a helper function to return the minimum of two uint32s.
@@ -446,7 +451,9 @@ type Peer struct {
 	connected     int32
 	disconnect    int32
 
-	conn net.Conn
+	// connMtx serializes connection association with disconnection.
+	connMtx sync.Mutex
+	conn    net.Conn
 
 	// These fields are set at creation time and never modified, so they are
 	// safe to read from concurrently without a mutex.
@@ -471,7 +478,7 @@ type Peer struct {
 
 	wireEncoding wire.MessageEncoding
 
-	knownInventory     lru.Cache
+	knownInventory     *lru.Set[wire.InvVect]
 	prevGetBlocksMtx   sync.Mutex
 	prevGetBlocksBegin *chainhash.Hash
 	prevGetBlocksStop  *chainhash.Hash
@@ -542,7 +549,16 @@ func (p *Peer) UpdateLastAnnouncedBlock(blkHash *chainhash.Hash) {
 //
 // This function is safe for concurrent access.
 func (p *Peer) AddKnownInventory(invVect *wire.InvVect) {
-	p.knownInventory.Add(invVect)
+	p.knownInventory.Put(*invVect)
+}
+
+// knowsInventory returns whether the peer is known to have the passed
+// inventory.  Inventory is matched by value, since the same inventory arrives
+// in different messages.
+//
+// This function is safe for concurrent access.
+func (p *Peer) knowsInventory(invVect *wire.InvVect) bool {
+	return p.knownInventory.Contains(*invVect)
 }
 
 // StatsSnapshot returns a snapshot of the current peer flags and statistics.
@@ -1760,7 +1776,7 @@ out:
 
 				// Don't send inventory that became known after
 				// the initial check.
-				if p.knownInventory.Contains(iv) {
+				if p.knowsInventory(iv) {
 					continue
 				}
 
@@ -1966,7 +1982,7 @@ func (p *Peer) QueueMessageWithEncoding(msg wire.Message, doneChan chan<- struct
 func (p *Peer) QueueInventory(invVect *wire.InvVect) {
 	// Don't add the inventory to the send queue if the peer is already
 	// known to have it.
-	if p.knownInventory.Contains(invVect) {
+	if p.knowsInventory(invVect) {
 		return
 	}
 
@@ -2008,8 +2024,11 @@ func (p *Peer) Disconnect() {
 	}
 
 	log.Tracef("Disconnecting %s", p)
-	if atomic.LoadInt32(&p.connected) != 0 {
-		p.conn.Close()
+	p.connMtx.Lock()
+	conn := p.conn
+	p.connMtx.Unlock()
+	if conn != nil {
+		_ = conn.Close()
 	}
 	close(p.quit)
 }
@@ -2179,7 +2198,7 @@ func (p *Peer) localVersionMsg() (*wire.MsgVersion, error) {
 	// detected.  This is accomplished by adding it to a size-limited map of
 	// recently seen nonces.
 	nonce := uint64(rand.Int63())
-	sentNonces.Add(nonce)
+	sentNonces.Put(nonce)
 
 	// Version message.
 	msg := wire.NewMsgVersion(ourNA, theirNA, nonce, blockNum)
@@ -2441,16 +2460,27 @@ func (p *Peer) start() error {
 	return nil
 }
 
-// AssociateConnection associates the given conn to the peer.   Calling this
-// function when the peer is already connected will have no effect.
+// AssociateConnection associates the given conn to the peer. Calling this
+// function when the peer is already connected will have no effect. When the
+// peer is already disconnecting, the connection is closed instead.
 func (p *Peer) AssociateConnection(conn net.Conn) {
-	// Already connected?
-	if !atomic.CompareAndSwapInt32(&p.connected, 0, 1) {
+	p.connMtx.Lock()
+	if atomic.LoadInt32(&p.connected) != 0 {
+		p.connMtx.Unlock()
+		return
+	}
+	if atomic.LoadInt32(&p.disconnect) != 0 {
+		p.connMtx.Unlock()
+		_ = conn.Close()
 		return
 	}
 
 	p.conn = conn
+	p.statsMtx.Lock()
 	p.timeConnected = time.Now()
+	p.statsMtx.Unlock()
+	atomic.StoreInt32(&p.connected, 1)
+	p.connMtx.Unlock()
 
 	if p.cfg.UsingV2Conn {
 		p.V2Transport.UseReadWriter(conn)
@@ -2537,7 +2567,7 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 	p := Peer{
 		inbound:         inbound,
 		wireEncoding:    wire.BaseEncoding,
-		knownInventory:  lru.NewCache(maxKnownInventory),
+		knownInventory:  lru.NewSet[wire.InvVect](maxKnownInventory),
 		stallControl:    make(chan stallControlMsg, 1), // nonblocking sync
 		outputQueue:     make(chan outMsg, outputBufferSize),
 		sendQueue:       make(chan outMsg, 1),   // nonblocking sync
@@ -2553,7 +2583,16 @@ func newPeerBase(origCfg *Config, inbound bool) *Peer {
 	}
 
 	if p.cfg.UsingV2Conn && p.Services()&wire.SFNodeP2PV2 == wire.SFNodeP2PV2 {
-		p.V2Transport = v2transport.NewPeer()
+		var options []v2transport.PeerOption
+		if inbound && p.cfg.V2HandshakeAdmission != nil {
+			options = append(options,
+				v2transport.WithResponderHandshakeAdmission(
+					p.cfg.V2HandshakeAdmission,
+				),
+			)
+		}
+
+		p.V2Transport = v2transport.NewPeerWithOptions(options...)
 	} else {
 		// TODO: Hack, change.
 		p.cfg.UsingV2Conn = false

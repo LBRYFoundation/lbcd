@@ -30,10 +30,10 @@ import (
 	"github.com/btcsuite/btcd/connmgr"
 	"github.com/btcsuite/btcd/database"
 	_ "github.com/btcsuite/btcd/database/ffldb"
+	"github.com/btcsuite/btcd/internal/socks"
 	"github.com/btcsuite/btcd/mempool"
 	"github.com/btcsuite/btcd/peer"
 	"github.com/btcsuite/btcd/wire/v2"
-	"github.com/btcsuite/go-socks/socks"
 	flags "github.com/jessevdk/go-flags"
 )
 
@@ -95,6 +95,22 @@ func minUint32(a, b uint32) uint32 {
 	return b
 }
 
+// validateMaxPeers ensures btcd has a positive total peer budget.
+func validateMaxPeers(maxPeers int) error {
+	if maxPeers <= 0 {
+		return fmt.Errorf("maxpeers must be greater than zero: %d", maxPeers)
+	}
+
+	return nil
+}
+
+// proxyTorIsolation returns whether connections through --proxy use Tor stream
+// isolation. When --onion is set too, --proxy isn't the Tor proxy and the
+// onion proxy is isolated instead.
+func proxyTorIsolation(torIsolation bool, onionProxy string) bool {
+	return torIsolation && onionProxy == ""
+}
+
 // config defines the configuration options for btcd.
 //
 // See loadConfig for details on the configuration load process.
@@ -129,7 +145,7 @@ type config struct {
 	Listeners            []string      `long:"listen" description:"Add an interface/port to listen for connections (default all interfaces port: 8333, testnet: 18333)"`
 	LogDir               string        `long:"logdir" description:"Directory to log output."`
 	MaxOrphanTxs         int           `long:"maxorphantx" description:"Max number of orphan transactions to keep in memory"`
-	MaxPeers             int           `long:"maxpeers" description:"Max number of inbound and outbound peers"`
+	MaxPeers             int           `long:"maxpeers" description:"Max number of inbound and outbound peers. Must be greater than zero. Outbound slots for the configured peer mode are reserved before inbound capacity is calculated"`
 	MiningAddrs          []string      `long:"miningaddr" description:"Add the specified payment address to the list of addresses to use for generated blocks -- At least one address is required if the generate option is set"`
 	MinRelayTxFee        float64       `long:"minrelaytxfee" description:"The minimum transaction fee in BTC/kB to be considered a non-zero fee."`
 	DisableBanning       bool          `long:"nobanning" description:"Disable banning of misbehaving peers"`
@@ -615,6 +631,13 @@ func loadConfig() (*config, []string, error) {
 		return nil, nil, err
 	}
 
+	if err := validateMaxPeers(cfg.MaxPeers); err != nil {
+		err := fmt.Errorf("%s: %w", funcName, err)
+		fmt.Fprintln(os.Stderr, err)
+		fmt.Fprintln(os.Stderr, usageMessage)
+		return nil, nil, err
+	}
+
 	// If mainnet is active, then we won't allow the stall handler to be
 	// disabled.
 	if activeNetParams.Params.Net == wire.MainNet && cfg.DisableStallHandler {
@@ -1063,11 +1086,12 @@ func loadConfig() (*config, []string, error) {
 		// Tor isolation flag means proxy credentials will be overridden
 		// unless there is also an onion proxy configured in which case
 		// that one will be overridden.
-		torIsolation := false
-		if cfg.TorIsolation && cfg.OnionProxy == "" &&
+		torIsolation := proxyTorIsolation(
+			cfg.TorIsolation, cfg.OnionProxy,
+		)
+		if torIsolation &&
 			(cfg.ProxyUser != "" || cfg.ProxyPass != "") {
 
-			torIsolation = true
 			fmt.Fprintln(os.Stderr, "Tor isolation set -- "+
 				"overriding specified proxy user credentials")
 		}

@@ -157,6 +157,17 @@ func DecodeAddress(addr string, defaultNet *chaincfg.Params) (Address, error) {
 		if chaincfg.IsBech32SegwitPrefix(prefix) {
 			witnessVer, witnessProg, err := decodeSegWitAddress(addr)
 			if err != nil {
+				// The string may be a base58 address that
+				// happens to start with the prefix, such as a
+				// simnet "Sb1..." address. If it is not, the
+				// bech32 error is the more useful one.
+				a, b58Err := decodeBase58Address(
+					addr, defaultNet,
+				)
+				if b58Err == nil {
+					return a, nil
+				}
+
 				return nil, err
 			}
 
@@ -196,6 +207,14 @@ func DecodeAddress(addr string, defaultNet *chaincfg.Params) (Address, error) {
 			}
 		}
 	}
+
+	return decodeBase58Address(addr, defaultNet)
+}
+
+// decodeBase58Address decodes a hex encoded public key or a base58 encoded
+// P2PKH or P2SH address.
+func decodeBase58Address(addr string, defaultNet *chaincfg.Params) (Address,
+	error) {
 
 	// Serialized public keys are either 65 bytes (130 hex chars) if
 	// uncompressed/hybrid or 33 bytes (66 hex chars) if compressed.
@@ -275,16 +294,19 @@ func decodeSegWitAddress(address string) (byte, []byte, error) {
 			"version 0: %v", len(regrouped))
 	}
 
-	// For witness version 0, the bech32 encoding must be used.
+	// Per BIP-350, witness version 0 must use the bech32 encoding, while
+	// witness versions 1 through 16 must use the bech32m encoding. Previously
+	// only versions 0 and 1 were checked, which let a v2-v16 program encoded
+	// with the legacy bech32 checksum decode successfully in violation of the
+	// spec.
 	if version == 0 && bech32version != bech32.Version0 {
 		return 0, nil, fmt.Errorf("invalid checksum expected bech32 " +
 			"encoding for address with witness version 0")
 	}
 
-	// For witness version 1, the bech32m encoding must be used.
-	if version == 1 && bech32version != bech32.VersionM {
-		return 0, nil, fmt.Errorf("invalid checksum expected bech32m " +
-			"encoding for address with witness version 1")
+	if version >= 1 && bech32version != bech32.VersionM {
+		return 0, nil, fmt.Errorf("invalid checksum expected bech32m "+
+			"encoding for address with witness version %d", version)
 	}
 
 	return version, regrouped, nil

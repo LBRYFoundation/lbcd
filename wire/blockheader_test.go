@@ -62,6 +62,7 @@ func TestBlockHeaderWire(t *testing.T) {
 		Bits:       bits,
 		Nonce:      nonce,
 	}
+	baseBlockHdr.ClaimTrie[0] = 0x33
 
 	// baseBlockHdrEncoded is the wire encoded bytes of baseBlockHdr.
 	baseBlockHdrEncoded := []byte{

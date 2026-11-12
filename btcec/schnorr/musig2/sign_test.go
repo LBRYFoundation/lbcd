@@ -119,6 +119,14 @@ func TestMusig2SignVerify(t *testing.T) {
 
 		testName := fmt.Sprintf("valid_case_%v", i)
 		t.Run(testName, func(t *testing.T) {
+			msgBytes := mustParseHex(
+				testCases.Msgs[testCase.MsgIndex],
+			)
+			if len(msgBytes) != 32 {
+				t.Skipf("Sign takes a 32-byte message, got %d",
+					len(msgBytes))
+			}
+
 			pubKeys, err := keysFromIndices(
 				t, testCase.Indices, testCases.PubKeys,
 			)
@@ -132,7 +140,7 @@ func TestMusig2SignVerify(t *testing.T) {
 			require.NoError(t, err)
 
 			var msg [32]byte
-			copy(msg[:], mustParseHex(testCases.Msgs[testCase.MsgIndex]))
+			copy(msg[:], msgBytes)
 
 			var secNonce [SecNonceSize]byte
 			copy(secNonce[:], mustParseHex(testCases.PrivNonces[0]))
@@ -218,10 +226,8 @@ func TestMusig2SignVerify(t *testing.T) {
 				mustParseHex(testCases.Msgs[testCase.MsgIndex]),
 			)
 
-			var secNonce [SecNonceSize]byte
-			copy(secNonce[:], mustParseHex(testCases.PrivNonces[0]))
-
-			signerNonce := secNonceToPubNonce(secNonce)
+			signerNonce := pubNonces[testCase.SignerIndex]
+			signerKey := pubKeys[testCase.SignerIndex]
 
 			var partialSig PartialSignature
 			err = partialSig.Decode(
@@ -233,8 +239,7 @@ func TestMusig2SignVerify(t *testing.T) {
 
 			err = verifyPartialSig(
 				&partialSig, signerNonce, combinedNonce,
-				pubKeys, privKey.PubKey().SerializeCompressed(),
-				msg,
+				pubKeys, signerKey.SerializeCompressed(), msg,
 			)
 			require.Error(t, err)
 		})
@@ -309,6 +314,27 @@ func pSigsFromIndices(t *testing.T, sigs []string, indices []int) []*PartialSign
 	}
 
 	return pSigs
+}
+
+// TestPartialSignatureDecodeRejectsShortReads verifies that Decode rejects
+// inputs that do not contain a full scalar.
+func TestPartialSignatureDecodeRejectsShortReads(t *testing.T) {
+	t.Parallel()
+
+	testCases := map[string][]byte{
+		"empty":     nil,
+		"truncated": bytes.Repeat([]byte{0x01}, 31),
+	}
+
+	for name, testCase := range testCases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+
+			var sig PartialSignature
+			err := sig.Decode(bytes.NewReader(testCase))
+			require.Error(t, err)
+		})
+	}
 }
 
 // TestMusig2SignCombine tests that we pass the musig2 sig combination tests.

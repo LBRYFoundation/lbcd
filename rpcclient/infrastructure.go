@@ -28,8 +28,8 @@ import (
 
 	"github.com/btcsuite/btcd/btcjson"
 	"github.com/btcsuite/btcd/chaincfg/v2"
-	"github.com/btcsuite/go-socks/socks"
-	"github.com/btcsuite/websocket"
+	"github.com/btcsuite/btcd/internal/socks"
+	"github.com/gorilla/websocket"
 )
 
 var (
@@ -464,8 +464,14 @@ func (c *Client) shouldLogReadError(err error) bool {
 	default:
 	}
 
-	// No logging when the connection has been disconnected.
+	// No logging when the connection has been disconnected, including when
+	// the server closed it normally with a close frame.
 	if err == io.EOF {
+		return false
+	}
+	if websocket.IsCloseError(err, websocket.CloseNormalClosure,
+		websocket.CloseGoingAway) {
+
 		return false
 	}
 	if opErr, ok := err.(*net.OpError); ok && !opErr.Temporary() {
@@ -810,12 +816,14 @@ retryloop:
 			httpReq.Header.Set(key, value)
 		}
 
-		// Configure basic access authorization.
-		user, pass, authErr := config.getAuth()
-		if authErr != nil {
-			return nil, authErr
+		// Configure generated basic access authorization.
+		if !config.DisableAuth {
+			user, pass, authErr := config.getAuth()
+			if authErr != nil {
+				return nil, authErr
+			}
+			httpReq.SetBasicAuth(user, pass)
 		}
-		httpReq.SetBasicAuth(user, pass)
 
 		httpResponse, err = httpClient.Do(httpReq)
 
@@ -1330,6 +1338,17 @@ type ConnConfig struct {
 	// EnableBCInfoHacks is an option provided to enable compatibility hacks
 	// when connecting to blockchain.info RPC server
 	EnableBCInfoHacks bool
+
+	// DisableAuth instructs the client to skip generating a Basic
+	// Authorization header for RPC requests. Caller-provided Authorization
+	// values in ExtraHeaders are still sent.
+	DisableAuth bool
+
+	// netDialContext, if set, opens the network connection of a websocket
+	// instead of the default dialer. Tests use it to connect over in-memory
+	// pipes.
+	netDialContext func(ctx context.Context, network,
+		addr string) (net.Conn, error)
 }
 
 // getAuth returns the username and passphrase that will actually be used for
@@ -1457,7 +1476,13 @@ func dial(config *ConnConfig) (*websocket.Conn, error) {
 
 	// Create a websocket dialer that will be used to make the connection.
 	// It is modified by the proxy setting below as needed.
-	dialer := websocket.Dialer{TLSClientConfig: tlsConfig}
+	// The handshake timeout keeps a server that stalls the handshake from
+	// hanging the dial.
+	dialer := websocket.Dialer{
+		NetDialContext:   config.netDialContext,
+		TLSClientConfig:  tlsConfig,
+		HandshakeTimeout: defaultHTTPTimeout,
+	}
 
 	// Setup the proxy if one is configured.
 	if config.Proxy != "" {
@@ -1466,19 +1491,21 @@ func dial(config *ConnConfig) (*websocket.Conn, error) {
 			Username: config.ProxyUser,
 			Password: config.ProxyPass,
 		}
-		dialer.NetDial = proxy.Dial
+		dialer.NetDialContext = proxy.DialContext
 	}
 
-	// The RPC server requires basic authorization, so create a custom
-	// request header with the Authorization header set.
-	user, pass, err := config.getAuth()
-	if err != nil {
-		return nil, err
-	}
-	login := user + ":" + pass
-	auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(login))
+	// Configure generated basic access authorization. Caller-provided
+	// headers are added independently below.
 	requestHeader := make(http.Header)
-	requestHeader.Add("Authorization", auth)
+	if !config.DisableAuth {
+		user, pass, err := config.getAuth()
+		if err != nil {
+			return nil, err
+		}
+		login := user + ":" + pass
+		auth := "Basic " + base64.StdEncoding.EncodeToString([]byte(login))
+		requestHeader.Add("Authorization", auth)
+	}
 	for key, value := range config.ExtraHeaders {
 		requestHeader.Add(key, value)
 	}

@@ -787,6 +787,32 @@ func TestPsbtExtractor(t *testing.T) {
 	}
 }
 
+// TestExtractRejectsTrailingFinalScriptWitnessData ensures a final witness
+// value must contain exactly one serialized witness stack.
+func TestExtractRejectsTrailingFinalScriptWitnessData(t *testing.T) {
+	tx := wire.NewMsgTx(2)
+	tx.AddTxIn(wire.NewTxIn(&wire.OutPoint{}, nil, nil))
+	tx.AddTxOut(wire.NewTxOut(0, []byte{0x6a}))
+
+	var witness bytes.Buffer
+	err := WriteTxWitness(&witness, [][]byte{{0x51}})
+	require.NoError(t, err)
+
+	finalWitness := append([]byte{}, witness.Bytes()...)
+	finalWitness = append(finalWitness, 0x00)
+
+	packet := &Packet{
+		UnsignedTx: tx,
+		Inputs: []PInput{{
+			FinalScriptWitness: finalWitness,
+		}},
+		Outputs: []POutput{{}},
+	}
+
+	_, err = Extract(packet)
+	require.ErrorIs(t, err, ErrInvalidPsbtFormat)
+}
+
 func TestFinalizerAddSigHashFlags(t *testing.T) {
 	var signedPsbtData = map[string]string{
 		"Default":            "70736274ff01005e0200000001f1aabce974f1b242b36913f4f8a9f138a8042914dddc4117a578813a4dc32ee10000000000ffffffff017b0a0000000000002251209c1f4b7970d790c99b7265b53adec03551708fd7d67db78359f9c472fe642ad1000000000001012b430b0000000000002251209c1f4b7970d790c99b7265b53adec03551708fd7d67db78359f9c472fe642ad1011340e80246ac1955def419572514e50e4be47f56ccd51beae41ec80ad30cb77ed59ebca3c38dd8506e1b7c28fafa4bdf7d821464be1ee152416bdaf2c056fb4fb3290117206b1a4876464d6bfc6a7c106dd4c5a0f08af94b45a8200e47e02a7dc6148fd7b00000",
@@ -1336,6 +1362,138 @@ func TestFromUnsigned(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Error: %v", err)
 	}
+}
+
+func TestB64EncodeRejectsNilTaprootFields(t *testing.T) {
+	testCases := []struct {
+		name        string
+		expectedErr string
+		setNil      func(*Packet)
+	}{
+		{
+			name:        "input script spend signature",
+			expectedErr: "nil taproot script spend signature at index 0",
+			setNil: func(packet *Packet) {
+				packet.Inputs[0].TaprootScriptSpendSig =
+					[]*TaprootScriptSpendSig{nil}
+			},
+		},
+		{
+			name:        "input leaf script",
+			expectedErr: "nil taproot leaf script at index 0",
+			setNil: func(packet *Packet) {
+				packet.Inputs[0].TaprootLeafScript =
+					[]*TaprootTapLeafScript{nil}
+			},
+		},
+		{
+			name:        "input BIP32 derivation",
+			expectedErr: "nil taproot BIP32 derivation at index 0",
+			setNil: func(packet *Packet) {
+				packet.Inputs[0].TaprootBip32Derivation =
+					[]*TaprootBip32Derivation{nil}
+			},
+		},
+		{
+			name:        "output BIP32 derivation",
+			expectedErr: "nil taproot BIP32 derivation at index 0",
+			setNil: func(packet *Packet) {
+				packet.Outputs[0].TaprootBip32Derivation =
+					[]*TaprootBip32Derivation{nil}
+			},
+		},
+	}
+
+	for _, testCase := range testCases {
+		t.Run(testCase.name, func(t *testing.T) {
+			tx := wire.NewMsgTx(2)
+			tx.AddTxIn(&wire.TxIn{
+				PreviousOutPoint: wire.OutPoint{},
+			})
+			tx.AddTxOut(wire.NewTxOut(
+				1, []byte{txscript.OP_TRUE},
+			))
+
+			packet, err := NewFromUnsignedTx(tx)
+			require.NoError(t, err)
+			testCase.setNil(packet)
+
+			_, err = packet.B64Encode()
+			require.ErrorIs(t, err, ErrInvalidPsbtFormat)
+			require.ErrorContains(t, err, testCase.expectedErr)
+		})
+	}
+}
+
+func TestFindLeafScriptRejectsNilLeaf(t *testing.T) {
+	_, err := FindLeafScript(nil, make([]byte, chainhash.HashSize))
+	require.ErrorIs(t, err, ErrInvalidPsbtFormat)
+	require.ErrorContains(t, err, "nil PSBT input")
+
+	input := &PInput{
+		TaprootLeafScript: []*TaprootTapLeafScript{nil},
+	}
+
+	_, err = FindLeafScript(input, make([]byte, chainhash.HashSize))
+	require.ErrorIs(t, err, ErrInvalidPsbtFormat)
+	require.ErrorContains(t, err, "nil taproot leaf script at index 0")
+}
+
+func TestFinalizeRejectsNilTaprootFields(t *testing.T) {
+	newPacket := func() *Packet {
+		tx := wire.NewMsgTx(2)
+		tx.AddTxIn(&wire.TxIn{
+			PreviousOutPoint: wire.OutPoint{},
+		})
+		tx.AddTxOut(wire.NewTxOut(
+			1, []byte{txscript.OP_TRUE},
+		))
+
+		packet, err := NewFromUnsignedTx(tx)
+		require.NoError(t, err)
+		packet.Inputs[0].WitnessUtxo = wire.NewTxOut(
+			1, append(
+				[]byte{txscript.OP_1, txscript.OP_DATA_32},
+				make([]byte, 32)...,
+			),
+		)
+
+		return packet
+	}
+
+	t.Run("script spend signature", func(t *testing.T) {
+		packet := newPacket()
+		packet.Inputs[0].TaprootScriptSpendSig =
+			[]*TaprootScriptSpendSig{nil}
+
+		finalized, err := MaybeFinalize(packet, 0)
+		require.False(t, finalized)
+		require.ErrorIs(t, err, ErrNotFinalizable)
+
+		err = Finalize(packet, 0)
+		require.ErrorIs(t, err, ErrInvalidPsbtFormat)
+		require.ErrorContains(
+			t, err, "nil taproot script spend signature at index 0",
+		)
+	})
+
+	t.Run("leaf script", func(t *testing.T) {
+		packet := newPacket()
+		packet.Inputs[0].TaprootScriptSpendSig =
+			[]*TaprootScriptSpendSig{{
+				LeafHash: make([]byte, chainhash.HashSize),
+			}}
+		packet.Inputs[0].TaprootLeafScript =
+			[]*TaprootTapLeafScript{nil}
+
+		finalized, err := MaybeFinalize(packet, 0)
+		require.False(t, finalized)
+		require.ErrorIs(t, err, ErrNotFinalizable)
+
+		err = Finalize(packet, 0)
+		require.ErrorIs(t, err, ErrInvalidPsbtFormat)
+		require.ErrorContains(t, err, "nil taproot leaf script at index 0")
+	})
 }
 
 func TestNonWitnessToWitness(t *testing.T) {
